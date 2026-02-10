@@ -3384,13 +3384,42 @@ if (select.options.length === 1) {
     }
 
 function showRidNotification(rid) {
-  // 🔊 Apenas som (sem popup visual)
-  const audio = new Audio("/notify.ogg");
-  audio.volume = 0.8;
-  audio.play().catch(() => {
-    console.log("Som bloqueado pelo navegador até o usuário interagir.");
-  });
+ // 🔊 áudio global (criado uma vez)
+const NOTIFY_SOUND_URL = new URL("notify.ogg", window.location.href).toString();
+const notifyAudio = new Audio(NOTIFY_SOUND_URL);
+notifyAudio.volume = 0.8;
+notifyAudio.preload = "auto";
+
+let audioUnlocked = false;
+
+// 🔓 desbloqueia o áudio no primeiro clique/tecla
+function unlockAudioOnce() {
+  if (audioUnlocked) return;
+
+  notifyAudio.muted = true;
+  notifyAudio.play()
+    .then(() => {
+      notifyAudio.pause();
+      notifyAudio.currentTime = 0;
+      notifyAudio.muted = false;
+      audioUnlocked = true;
+      console.log("🔊 Áudio desbloqueado");
+    })
+    .catch(() => {});
 }
+
+document.addEventListener("click", unlockAudioOnce);
+document.addEventListener("keydown", unlockAudioOnce);
+
+// 🔔 toca o som quando um RID é designado
+function showRidNotification(rid) {
+  try {
+    notifyAudio.currentTime = 0;
+    notifyAudio.play();
+  } catch (e) {
+    console.warn("Som não pôde ser tocado:", e);
+  }
+}}
 
     async function showRidDetails(ridId) {
          if (!isAdmin()) {
