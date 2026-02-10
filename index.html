@@ -3384,7 +3384,7 @@ if (select.options.length === 1) {
     }
 
 function showRidNotification(rid) {
- // 🔊 áudio global (criado uma vez)
+// 🔊 áudio global (não cria toda hora)
 const NOTIFY_SOUND_URL = new URL("notify.ogg", window.location.href).toString();
 const notifyAudio = new Audio(NOTIFY_SOUND_URL);
 notifyAudio.volume = 0.8;
@@ -3392,34 +3392,44 @@ notifyAudio.preload = "auto";
 
 let audioUnlocked = false;
 
-// 🔓 desbloqueia o áudio no primeiro clique/tecla
-function unlockAudioOnce() {
+function unlockAudio() {
   if (audioUnlocked) return;
 
+  // truque pra “desbloquear” autoplay
   notifyAudio.muted = true;
+
   notifyAudio.play()
     .then(() => {
       notifyAudio.pause();
       notifyAudio.currentTime = 0;
       notifyAudio.muted = false;
       audioUnlocked = true;
-      console.log("🔊 Áudio desbloqueado");
+      console.log("🔊 Áudio desbloqueado!");
     })
-    .catch(() => {});
+    .catch((e) => {
+      console.warn("Ainda bloqueado:", e);
+    });
 }
 
-document.addEventListener("click", unlockAudioOnce);
-document.addEventListener("keydown", unlockAudioOnce);
+// desbloqueia com qualquer interação do usuário
+document.addEventListener("click", unlockAudio);
+document.addEventListener("touchstart", unlockAudio);
+document.addEventListener("keydown", unlockAudio);
 
-// 🔔 toca o som quando um RID é designado
 function showRidNotification(rid) {
-  try {
-    notifyAudio.currentTime = 0;
-    notifyAudio.play();
-  } catch (e) {
-    console.warn("Som não pôde ser tocado:", e);
+  // 🔒 se ainda não desbloqueou, tenta desbloquear e sai
+  if (!audioUnlocked) {
+    unlockAudio();
+    console.log("⚠️ Clique na tela 1x para liberar o som.");
+    return;
   }
-}}
+
+  notifyAudio.currentTime = 0;
+  notifyAudio.play().catch((e) => {
+    console.warn("Som bloqueado/erro:", e);
+  });
+}
+}
 
     async function showRidDetails(ridId) {
          if (!isAdmin()) {
