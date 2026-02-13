@@ -1074,30 +1074,17 @@ if (window.currentPage === 'designated') renderDesignatedPage();
   // =========================
   if (updates.status) {
 
-    // EM ANDAMENTO
-    if (updates.status === 'EM ANDAMENTO') {
-      if (!updates.observations || updates.observations.trim() === '') {
-        showToast(
-          '⚠️ Para status "EM ANDAMENTO", é OBRIGATORIO preencher o campo Observações.',
-          'error'
-        );
-        return false;
-      }
-    }
 
-    // CORRIGIDO
-    if (updates.status === 'CORRIGIDO') {
-      if (
-        !updates.correctiveActions || updates.correctiveActions.trim() === '' ||
-        !updates.conclusion || updates.conclusion.trim() === ''
-      ) {
-        showToast(
-          '⚠️ Para status "CORRIGIDO", é OBRIGATORIO preencher Ações Corretivas e Conclusão.',
-          'error'
-        );
-        return false;
-      }
-    }
+   // CORRIGIDO (somente Ações Corretivas obrigatórias)
+if (updates.status === 'CORRIGIDO') {
+  if (!updates.correctiveActions || updates.correctiveActions.trim() === '') {
+    showToast(
+      '⚠️ Para status "CORRIGIDO", é obrigatório preencher Ações Corretivas.',
+      'error'
+    );
+    return false;
+  }
+}
 
     // ENCERRADO
     if (updates.status === 'ENCERRADO') {
@@ -2026,6 +2013,85 @@ if (lastRid) {
       };
     });
 }
+
+// ===============================
+// 🧾 Tooltip flutuante (RIDs removidos) - versão segura
+// ===============================
+let deletedRidTooltipEl = null;
+
+function ensureDeletedRidTooltip() {
+  if (deletedRidTooltipEl) return deletedRidTooltipEl;
+
+  const el = document.createElement('div');
+  el.id = 'deletedRidTooltip';
+  el.style.position = 'fixed';
+  el.style.zIndex = '99999';
+  el.style.pointerEvents = 'none';
+  el.style.display = 'none';
+  el.style.maxWidth = '420px';
+
+  el.style.background = 'rgba(255,255,255,0.98)';
+  el.style.border = '1px solid rgba(0,0,0,0.12)';
+  el.style.borderRadius = '12px';
+  el.style.boxShadow = '0 12px 30px rgba(0,0,0,0.18)';
+  el.style.padding = '10px 12px';
+  el.style.fontSize = '12px';
+  el.style.color = '#111827';
+  el.style.backdropFilter = 'blur(6px)';
+
+  document.body.appendChild(el);
+  deletedRidTooltipEl = el;
+  return el;
+}
+
+function showDeletedRidTooltipFromEl(el) {
+  const tooltip = ensureDeletedRidTooltip();
+
+  const rid = el?.getAttribute('data-rid') || '—';
+  const desc = el?.getAttribute('data-desc') || 'Sem descrição cadastrada.';
+
+  tooltip.innerHTML = `
+    <div style="font-weight:700; margin-bottom:6px;">RID #${rid} — Descrição</div>
+    <div style="color:#374151; line-height:1.3; white-space:pre-wrap;">${escapeHtml(desc)}</div>
+  `;
+
+  tooltip.style.display = 'block';
+}
+
+function hideDeletedRidTooltip() {
+  if (!deletedRidTooltipEl) return;
+  deletedRidTooltipEl.style.display = 'none';
+}
+
+function moveDeletedRidTooltip(mouseEvent) {
+  if (!deletedRidTooltipEl || deletedRidTooltipEl.style.display === 'none') return;
+
+  const padding = 14;
+  const x = mouseEvent.clientX + padding;
+  const y = mouseEvent.clientY + padding;
+
+  const rect = deletedRidTooltipEl.getBoundingClientRect();
+  const maxX = window.innerWidth - rect.width - 10;
+  const maxY = window.innerHeight - rect.height - 10;
+
+  deletedRidTooltipEl.style.left = Math.min(x, maxX) + 'px';
+  deletedRidTooltipEl.style.top  = Math.min(y, maxY) + 'px';
+}
+
+// evita XSS/HTML quebrado
+function escapeHtml(str) {
+  return String(str)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+window.showDeletedRidTooltipFromEl = showDeletedRidTooltipFromEl;
+window.hideDeletedRidTooltip = hideDeletedRidTooltip;
+window.moveDeletedRidTooltip = moveDeletedRidTooltip;
+
 
     function renderAdminDashboard() {
   // 🔒 TRAVA ABSOLUTA DE ROLE
@@ -4724,51 +4790,38 @@ await ridRef.update({
       }
     }
 
-    async function rejectRidDeletion(requestId, requesterId) {
-      try {
-        await db.collection('deleteRequests').doc(requestId).update({ status: 'rejected' });
-        
-        await createNotification(requesterId, {
-          type: 'request_rejected',
-          ridId: '',
-          ridNumber: '',
-          title: 'Solicitação Rejeitada',
-          message: 'Sua solicitação de exclusão da RID foi rejeitada',
-          ridLocation: null,
-          deadline: null
-        });
-
-        showToast('Solicitação rejeitada');
-        renderRequestsPage();
-      } catch (error) {
-        showToast('Erro ao rejeitar solicitação: ' + error.message, 'error');
+   async function rejectRidDeletion(requestId, requesterId) {
+  try {
+    await db.collection('deleteRequests').doc(requestId).update({
+      status: 'rejected',
+      reviewedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      reviewedBy: {
+        uid: currentUser?.uid || null,
+        name: currentUserData?.name || 'DEV'
       }
-    }
+    });
 
-    async function approveEmployeeDeletion(requestId, userId, requesterId) {
-      try {
-        const user = allUsers.find(u => u.id === userId);
-        
-        await db.collection('users').doc(userId).delete();
-        await db.collection('employeeDeleteRequests').doc(requestId).update({ status: 'approved' });
-        
-        await createNotification(requesterId, {
-          type: 'request_approved',
-          ridId: '',
-          ridNumber: '',
-          title: 'Solicitação Aprovada',
-          message: `Sua solicitação de exclusão de ${user?.name || 'funcionário'} foi aprovada`,
-          ridLocation: null,
-          deadline: null
-        });
+    await createNotification(requesterId, {
+      type: 'request_rejected',
+      ridId: '',
+      ridNumber: '',
+      title: 'Solicitação Rejeitada',
+      message: 'Sua solicitação de exclusão do RID foi rejeitada',
+      ridLocation: null,
+      deadline: null
+    });
 
-        showToast('Funcionário excluído com sucesso!');
-        await loadUsers();
-        renderRequestsPage();
-      } catch (error) {
-        showToast('Erro ao excluir funcionário: ' + error.message, 'error');
-      }
-    }
+    showToast('Solicitação rejeitada');
+    renderRequestsPage();
+  } catch (error) {
+    showToast('Erro ao rejeitar solicitação: ' + error.message, 'error');
+  }
+}
+
+// garante que o onclick do HTML encontra as funções
+window.approveRidDeletion = approveRidDeletion;
+window.rejectRidDeletion = rejectRidDeletion;
+
 
     async function rejectEmployeeDeletion(requestId, requesterId) {
       try {
@@ -5612,7 +5665,6 @@ const sectorRanking = Object.entries(sectorRisk)
 
 <!-- Painel de Filtros -->
 <div
-  <div
   id="devFilterPanel"
   class="hidden mb-8 bg-white rounded-lg shadow-md p-5 border"
   style="border-color:#e5e7eb;"
@@ -5784,7 +5836,7 @@ const sectorRanking = Object.entries(sectorRisk)
 
   <div class="flex items-center justify-between mb-4">
     <h2 class="text-lg font-bold text-gray-700">
-       RIDs Removidos do Sistema
+      RIDs Removidos do Sistema
     </h2>
 
     <span class="text-sm font-semibold text-gray-600">
@@ -5797,70 +5849,73 @@ const sectorRanking = Object.entries(sectorRisk)
       ? `<p class="text-gray-500">Nenhum RID removido até o momento</p>`
       : `
         <div class="space-y-3 max-h-[450px] overflow-y-auto pr-2">
-          ${deletedRids.map(r => `
-           <div class="bg-white rounded-md px-4 py-2 opacity-80">
-  <div class="flex items-center justify-between text-sm text-gray-700 gap-4">
+         ${deletedRids.map(r => `
+  <div
+    class="bg-white rounded-md px-4 py-2 opacity-80"
+    data-rid="${(r.ridNumber || '—')}"
+    data-desc="${String(r.description || r.ridDescription || r.riskDescription || 'Sem descrição cadastrada.').replaceAll('"','&quot;')}"
+    onmouseenter="showDeletedRidTooltipFromEl(this)"
+    onmousemove="moveDeletedRidTooltip(event)"
+    onmouseleave="hideDeletedRidTooltip()"
+  >
+    <div class="flex items-center justify-between text-sm text-gray-700 gap-4">
+      <!-- ESQUERDA -->
+      <div class="flex items-center gap-3 min-w-0">
+        <span class="font-semibold text-gray-800 whitespace-nowrap">
+          RID #${r.ridNumber || '—'}
+        </span>
 
-    <!-- ESQUERDA -->
-    <div class="flex items-center gap-3 min-w-0">
-      <span class="font-semibold text-gray-800 whitespace-nowrap">
-        RID #${r.ridNumber || '—'}
-      </span>
+        <span class="text-xs bg-gray-300 text-gray-700 px-2 py-0.5 rounded-full">
+          REMOVIDO
+        </span>
 
-      <span class="text-xs bg-gray-300 text-gray-700 px-2 py-0.5 rounded-full">
-        REMOVIDO
-      </span>
+        <span class="text-gray-500 whitespace-nowrap">
+          Setor: ${r.sector || '—'}
+        </span>
 
-      <span class="text-gray-500 whitespace-nowrap">
-        Setor: ${r.sector || '—'}
-      </span>
+        <span class="text-gray-500 truncate">
+          Motivo: ${r.deleteReason || 'Não informado'}
+        </span>
+      </div>
 
-      <span class="text-gray-500 truncate">
-        Motivo: ${r.deleteReason || 'Não informado'}
-      </span>
+      <!-- DIREITA -->
+      <div class="flex items-center gap-3 text-xs text-gray-500 whitespace-nowrap">
+        <span class="flex items-center gap-1">
+          👤 ${r.deletedBy?.name || '—'}
+        </span>
+
+        <span>
+          ${r.deletedAt ? formatDate(r.deletedAt) : ''}
+        </span>
+
+        <span
+          onclick="openRestoreRidModal('${r.id}', '${r.ridNumber || ''}')"
+          title="Solicitar restauração"
+          class="cursor-pointer text-blue-600 hover:text-blue-800 flex items-center gap-1"
+        >
+          ↩ Voltar
+        </span>
+      </div>
     </div>
-
-    <!-- DIREITA -->
-    <div class="flex items-center gap-3 text-xs text-gray-500 whitespace-nowrap">
-      <span class="flex items-center gap-1">
-        👤 ${r.deletedBy?.name || '—'}
-      </span>
-
-      <span>
-        ${r.deletedAt ? formatDate(r.deletedAt) : ''}
-      </span>
-
-     <span
-  onclick="openRestoreRidModal('${r.id}', '${r.ridNumber || ''}')"
-  title="Solicitar restauração"
-  class="cursor-pointer text-blue-600 hover:text-blue-800 flex items-center gap-1"
->
-  ↩ Voltar
-</span>
-    </div>
-
   </div>
-</div>
-
-              </div>
-            </div>
-          `).join('')}
+`).join('')}
         </div>
       `
   }
 
 </div>
+`;
 
-        </div>
-      </div>
-    </div>
-  `;
-
+// ✅ desenha o gráfico depois que o canvas existe no DOM
 setTimeout(() => {
-  renderDevRiskChart(base);
-}, 100);
+  // usa a base filtrada e ignora removidos
+  const chartBase = (window.devFilteredBase || base || [])
+    .filter(r => !r.deleted && r.status !== 'EXCLUIDO' && r.status !== 'EXCLUÍDO');
 
+  renderDevRiskChart(chartBase);
+}, 50);
 }
+
 
 async function logRidHistory({
   ridId,
