@@ -58,6 +58,16 @@
       border-color: #a8d5e2;
       box-shadow: 0 0 0 3px rgba(168, 213, 226, 0.2);
     }
+
+    /* ✅ Textarea que cresce sozinho pra mostrar tudo */
+.textarea-autogrow{
+  resize: none;
+  overflow: hidden;      /* importante pro autoGrow funcionar */
+  min-height: 44px;
+  white-space: pre-wrap; /* mantém quebras de linha */
+  word-break: break-word;
+}
+
     /* 🔒 trava swipe horizontal no iOS quando modal está aberto */
 .modal-backdrop {
   overscroll-behavior: contain;
@@ -242,7 +252,6 @@ p, span, h1, h2, h3, h4 {
   appId: "1:954479408416:web:292797e541d84487021345"
 };
 
-
     // Initialize Firebase
     firebase.initializeApp(firebaseConfig);
     const auth = firebase.auth();
@@ -273,6 +282,17 @@ function getRidDateSafe(r) {
 
   return null;
 }
+
+function autoGrowTextarea(el) {
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = (el.scrollHeight + 2) + "px";
+}
+
+function autoGrowAllTextareas(root = document) {
+  root.querySelectorAll("textarea[data-autogrow='1']").forEach(t => autoGrowTextarea(t));
+}
+
 
 function getEmissionDateOnly(r) {
   // Só vale se for Timestamp do Firestore
@@ -384,6 +404,116 @@ function listenRidsRealtimeEmployee() {
     );
 }
 
+// =========================
+// 📊 MEU DESEMPENHO (FUNCIONÁRIO)
+// =========================
+
+function getMonthStartEnd(date = new Date()) {
+  const start = new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
+  const end = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
+  return { start, end };
+}
+
+function isResolvedStatus(status) {
+  const st = String(status || '').toUpperCase();
+  return st === 'CORRIGIDO' || st === 'ENCERRADO';
+}
+
+function calcMyPerformanceStats(myRids) {
+  const clean = (myRids || []).filter(r => !r?.deleted);
+
+  const upper = (v) => String(v || '').toUpperCase();
+
+  // ✅ CONTAGEM GERAL (vida toda) -> para os cards
+  const total = clean.length;
+  const corrigidos = clean.filter(r => upper(r.status) === 'CORRIGIDO').length;
+  const emAndamento = clean.filter(r => upper(r.status) === 'EM ANDAMENTO').length;
+  const vencidos = clean.filter(r => upper(r.status) === 'VENCIDO').length;
+
+  // ✅ MÊS ATUAL (para a linha de baixo)
+  const { start, end } = getMonthStartEnd(new Date());
+  const monthRids = clean.filter(r => {
+    const d = r.createdAt?.toDate?.();
+    return d && d >= start && d <= end;
+  });
+
+  const monthTotal = monthRids.length;
+
+  // ✅ meta pessoal (mês)
+  const metaPessoal = 4;
+  const bateuMeta = monthTotal >= metaPessoal;
+  const faltamMeta = Math.max(metaPessoal - monthTotal, 0);
+
+  return {
+    // cards (geral)
+    total,
+    corrigidos,
+    emAndamento,
+    vencidos,
+
+    // linha de baixo (mês atual)
+    monthTotal,
+    metaPessoal,
+    bateuMeta,
+    faltamMeta
+  };
+}
+
+
+ function renderMyPerformancePanelHTML(stats) {
+  return `
+    <div class="bg-white rounded-xl shadow-md p-3 md:p-6 mb-4">
+      <div class="flex items-center justify-between mb-2">
+        <div>
+          <h2 class="text-sm md:text-lg font-bold text-gray-800">📊 Meu desempenho</h2>
+          <p class="text-[11px] md:text-sm text-gray-500 leading-tight">
+            Geral + mês atual
+          </p>
+        </div>
+      </div>
+
+      <!-- Cards (GERAL - vida toda) -->
+     <div class="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3">
+
+  <div class="rounded-lg p-2 border border-gray-200 bg-slate-50 flex items-center justify-between">
+    <p class="text-[11px] font-semibold text-gray-600">Total</p>
+    <p class="text-base md:text-xl font-bold text-gray-800">${stats.total}</p>
+  </div>
+
+  <div class="rounded-lg p-2 border border-gray-200 bg-yellow-50 flex items-center justify-between">
+    <p class="text-[11px] font-semibold text-gray-600">Em andamento</p>
+    <p class="text-base md:text-xl font-bold text-gray-800">${stats.emAndamento}</p>
+  </div>
+
+  <div class="rounded-lg p-2 border border-gray-200 bg-red-50 flex items-center justify-between">
+    <p class="text-[11px] font-semibold text-gray-600">Vencidos</p>
+    <p class="text-base md:text-xl font-bold text-gray-800">${stats.vencidos}</p>
+  </div>
+
+  <div class="rounded-lg p-2 border border-gray-200 bg-green-50 flex items-center justify-between">
+    <p class="text-[11px] font-semibold text-gray-600">Corrigidos</p>
+    <p class="text-base md:text-xl font-bold text-gray-800">${stats.corrigidos}</p>
+  </div>
+
+</div>
+
+      <!-- Linha slim: mês atual + meta pessoal -->
+      <div class="mt-2 rounded-lg bg-gray-50 p-2 border border-gray-200 text-xs md:text-sm flex items-center justify-between gap-2">
+        <div class="text-gray-700">
+          <span class="font-semibold">${stats.monthTotal}</span> emitidos no mês
+          <span class="text-gray-400">•</span>
+          Meta: <span class="font-semibold">${stats.metaPessoal}</span>
+        </div>
+
+        <div class="font-semibold ${stats.bateuMeta ? 'text-green-600' : 'text-orange-600'}">
+          ${stats.bateuMeta ? 'Meta batida ✅' : `Faltam ${stats.faltamMeta}`}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+
 
 function spawnConfetti(card) {
   if (!card) return;
@@ -468,7 +598,7 @@ unsubscribeLeader = db.collection("rids")
 
     // Default Config
     const defaultConfig = {
-      system_title: "Sistema de Gerenciamento de RIDs",
+      system_title: "Sistema RIDs Natical",
       company_name: ""
     };
 
@@ -507,125 +637,6 @@ unsubscribeLeader = db.collection("rids")
     function getUserNameById(uid) {
   const user = allUsers.find(u => u.id === uid);
   return user ? user.name : 'Responsável';
-}
-
-// =========================
-// 📊 MEU DESEMPENHO
-// =========================
-
-function getMonthStartEnd(date = new Date()) {
-  const start = new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
-  const end = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
-  return { start, end };
-}
-
-function normalizeStatus(status) {
-  return String(status || '').toUpperCase().trim();
-}
-
-function calcMyPerformanceStats(myRids) {
-  const clean = (myRids || []).filter(r => !r?.deleted);
-
-  const upper = (v) => String(v || '').toUpperCase();
-
-  // ✅ CONTAGEM GERAL (vida toda) -> para os cards
-  const total = clean.length;
-  const corrigidos = clean.filter(r => upper(r.status) === 'CORRIGIDO').length;
-  const emAndamento = clean.filter(r => upper(r.status) === 'EM ANDAMENTO').length;
-  const vencidos = clean.filter(r => upper(r.status) === 'VENCIDO').length;
-
-  // ✅ MÊS ATUAL (para a linha de baixo)
-  const { start, end } = getMonthStartEnd(new Date());
-  const monthRids = clean.filter(r => {
-    const d = r.createdAt?.toDate?.();
-    return d && d >= start && d <= end;
-  });
-
-  const monthTotal = monthRids.length;
-
-  // ✅ meta pessoal (mês)
-  const metaPessoal = 4;
-  const bateuMeta = monthTotal >= metaPessoal;
-  const faltamMeta = Math.max(metaPessoal - monthTotal, 0);
-
-  return {
-    // cards (geral)
-    total,
-    corrigidos,
-    emAndamento,
-    vencidos,
-
-    // linha de baixo (mês atual)
-    monthTotal,
-    metaPessoal,
-    bateuMeta,
-    faltamMeta
-  };
-}
-
-function renderMyPerformancePanelHTML(stats) {
-  return `
-    <div class="bg-white rounded-xl shadow-md p-3 md:p-6 mb-4">
-      <div class="flex items-center justify-between mb-2">
-        <div>
-          <h2 class="text-sm md:text-lg font-bold text-gray-800">📊 Meu desempenho</h2>
-          <p class="text-[11px] md:text-sm text-gray-500 leading-tight">
-            Geral + mês atual
-          </p>
-        </div>
-      </div>
-
-      <!-- Cards (GERAL - vida toda) -->
-     <div class="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3">
-
-  <div class="rounded-lg p-2 border border-gray-200 bg-slate-50 flex items-center justify-between">
-    <p class="text-[11px] font-semibold text-gray-600">Total</p>
-    <p class="text-base md:text-xl font-bold text-gray-800">${stats.total}</p>
-  </div>
-
-  <div class="rounded-lg p-2 border border-gray-200 bg-yellow-50 flex items-center justify-between">
-    <p class="text-[11px] font-semibold text-gray-600">Em andamento</p>
-    <p class="text-base md:text-xl font-bold text-gray-800">${stats.emAndamento}</p>
-  </div>
-
-  <div class="rounded-lg p-2 border border-gray-200 bg-red-50 flex items-center justify-between">
-    <p class="text-[11px] font-semibold text-gray-600">Vencidos</p>
-    <p class="text-base md:text-xl font-bold text-gray-800">${stats.vencidos}</p>
-  </div>
-
-  <div class="rounded-lg p-2 border border-gray-200 bg-green-50 flex items-center justify-between">
-    <p class="text-[11px] font-semibold text-gray-600">Corrigidos</p>
-    <p class="text-base md:text-xl font-bold text-gray-800">${stats.corrigidos}</p>
-  </div>
-
-</div>
-
-      <!-- Linha slim: mês atual + meta pessoal -->
-      <div class="mt-2 rounded-lg bg-gray-50 p-2 border border-gray-200 text-xs md:text-sm flex items-center justify-between gap-2">
-        <div class="text-gray-700">
-          <span class="font-semibold">${stats.monthTotal}</span> emitidos no mês
-          <span class="text-gray-400">•</span>
-          Meta: <span class="font-semibold">${stats.metaPessoal}</span>
-        </div>
-
-        <div class="font-semibold ${stats.bateuMeta ? 'text-green-600' : 'text-orange-600'}">
-          ${stats.bateuMeta ? 'Meta batida ✅' : `Faltam ${stats.faltamMeta}`}
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-// helper pra deixar “nome e número na mesma linha”
-function perfMiniCard(label, value) {
-  return `
-    <div class="rounded-xl px-3 py-2 border border-gray-200 bg-white">
-      <div class="flex items-center justify-between gap-2">
-        <p class="text-[11px] md:text-xs font-extrabold text-gray-600 truncate">${label}</p>
-        <p class="text-base md:text-lg font-extrabold text-gray-800">${value}</p>
-      </div>
-    </div>
-  `;
 }
 
 async function getNextRidNumberSafe() {
@@ -1068,12 +1079,11 @@ if (window.currentPage === 'designated') renderDesignatedPage();
     }
 
     async function updateRid(ridId, updates) {
-  try {
+      try {
       // =========================
   // 🔔 Validação de STATUS
   // =========================
   if (updates.status) {
-
 
    // CORRIGIDO (somente Ações Corretivas obrigatórias)
 if (updates.status === 'CORRIGIDO') {
@@ -1085,6 +1095,7 @@ if (updates.status === 'CORRIGIDO') {
     return false;
   }
 }
+
 
     // ENCERRADO
     if (updates.status === 'ENCERRADO') {
@@ -1108,7 +1119,9 @@ if (updates.status === 'CORRIGIDO') {
       updates.conclusionDate = firebase.firestore.FieldValue.serverTimestamp();
     }
 
-    const rid = allRids.find(r => r.id === ridId);
+    const ridSnap = await db.collection('rids').doc(ridId).get();
+    const rid = ridSnap.exists ? { id: ridSnap.id, ...ridSnap.data() } : null;
+
 
 if (!rid) {
   showToast('RID não encontrada', 'error');
@@ -1119,6 +1132,19 @@ if (rid.deleted) {
   showToast('RID removido não pode ser alterado', 'error');
   return false;
 }
+
+// 📩 Se trocou (ou removeu) o líder, reativa envio do e-mail (Worker)
+if (Object.prototype.hasOwnProperty.call(updates, 'responsibleLeader')) {
+  const newLeader = updates.responsibleLeader || null;
+  const oldLeader = rid?.responsibleLeader || null;
+
+  if (newLeader !== oldLeader) {
+    updates.emailSent = false;
+    updates.emailSentAt = null;
+    updates.lastNotifiedLeader = null;
+  }
+}
+
 
 
 await db.collection('rids').doc(ridId).update(updates);
@@ -1596,6 +1622,133 @@ await ridRef.update({
         showToast('Erro ao solicitar exclusão: ' + error.message, 'error');
       }
     }
+
+    // ✅ Deleta (exclusão lógica) um RID e grava o motivo corretamente
+async function deleteRid(ridId, reason) {
+  const ridRef = db.collection('rids').doc(ridId);
+  const ridSnap = await ridRef.get();
+
+  if (!ridSnap.exists) {
+    throw new Error('RID não encontrada para exclusão');
+  }
+
+  const ridData = ridSnap.data() || {};
+  const previousObs = ridData?.observations || '';
+
+  const safeReason = (reason || '').trim() || 'Solicitação de exclusão aprovada';
+
+  const deleteNote =
+`[${new Date().toLocaleDateString('pt-BR')}] RID removido do sistema
+Motivo: ${safeReason}
+Removido por: ${currentUserData?.name || 'DEV'}`;
+
+  await ridRef.update({
+    deleted: true,
+    status: 'EXCLUIDO',
+    deletedAt: firebase.firestore.FieldValue.serverTimestamp(),
+
+    deletedBy: {
+      uid: currentUser?.uid || null,
+      name: currentUserData?.name || 'DEV',
+      role: isDeveloper() ? 'DEVELOPER' : 'ADMIN'
+    },
+
+    // ✅ aqui fica o motivo “limpo” pra UI usar direto
+    deleteReason: safeReason,
+
+    // ✅ aqui fica o histórico em observações (como você quer ver no modal)
+    observations: previousObs ? (previousObs + '\n\n' + deleteNote) : deleteNote,
+
+    // (mantém seu comportamento saudável)
+    emailSent: false,
+    emailSentAt: null,
+    lastNotifiedLeader: null
+  });
+}
+
+// se quiser garantir acesso global (não é obrigatório, mas ajuda)
+window.deleteRid = deleteRid;
+
+
+     // ✅ APROVAR solicitação de remoção de RID (DEV)
+async function approveRidDeletionRequest(requestId) {
+  try {
+    if (!isDeveloper()) {
+      showToast('Acesso negado', 'error');
+      return;
+    }
+
+    const reqRef = db.collection('deleteRequests').doc(requestId);
+    const reqSnap = await reqRef.get();
+
+    if (!reqSnap.exists) {
+      showToast('Solicitação não encontrada', 'error');
+      return;
+    }
+
+    const req = reqSnap.data();
+    const ridId = req?.ridId;
+    const reason = (req?.reason || '').trim() || 'Aprovado sem motivo informado';
+
+    if (!ridId) {
+      showToast('Solicitação inválida (ridId ausente)', 'error');
+      return;
+    }
+
+    // 1) marca request como aprovada
+    await reqRef.update({
+      status: 'approved',
+      reviewedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      reviewedBy: {
+        uid: currentUser.uid,
+        name: currentUserData?.name || 'DEV'
+      }
+    });
+
+    // 2) executa a exclusão REAL do RID (sem usar "updates")
+    await deleteRid(ridId, reason);
+
+    // 3) recarrega a página de solicitações
+    renderRequestsPage();
+
+    showToast('Solicitação aprovada e o RID foi excluído!');
+  } catch (error) {
+    showToast('Erro ao aprovar solicitação: ' + error.message, 'error');
+  }
+}
+
+// ❌ REJEITAR solicitação de remoção de RID (DEV)
+async function rejectRidDeletionRequest(requestId) {
+  try {
+    if (!isDeveloper()) {
+      showToast('Acesso negado', 'error');
+      return;
+    }
+
+    const rejectReason =
+      prompt('Motivo da rejeição (opcional):')?.trim() || null;
+
+    await db.collection('deleteRequests').doc(requestId).update({
+      status: 'rejected',
+      rejectReason,
+      reviewedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      reviewedBy: {
+        uid: currentUser.uid,
+        name: currentUserData?.name || 'DEV'
+      }
+    });
+
+    renderRequestsPage();
+    showToast('Solicitação rejeitada!');
+  } catch (error) {
+    showToast('Erro ao rejeitar solicitação: ' + error.message, 'error');
+  }
+}
+
+// expõe pro onclick do HTML
+window.approveRidDeletionRequest = approveRidDeletionRequest;
+window.rejectRidDeletionRequest = rejectRidDeletionRequest;
+
 
     // Data Loading Functions
 function listenRidsRealtimeAdmin() {
@@ -2093,6 +2246,39 @@ window.hideDeletedRidTooltip = hideDeletedRidTooltip;
 window.moveDeletedRidTooltip = moveDeletedRidTooltip;
 
 
+function showDashboardClosedRemovedTooltip(encerrados, removidos) {
+  const tooltip = ensureDeletedRidTooltip();
+
+  tooltip.innerHTML = `
+    <div style="font-weight:800; margin-bottom:6px;">Encerrados e Removidos</div>
+    <div style="color:#374151; line-height:1.4;">
+      🕔 Encerrados: <b>${encerrados}</b><br/>
+      🗑️ Removidos: <b>${removidos}</b>
+    </div>
+  `;
+
+  tooltip.style.display = 'block';
+}
+
+window.showDashboardClosedRemovedTooltip = showDashboardClosedRemovedTooltip;
+
+function showDashboardCorrectedTooltip(doMes, atrasadas) {
+  const tooltip = ensureDeletedRidTooltip();
+
+  tooltip.innerHTML = `
+    <div style="font-weight:800; margin-bottom:6px;">Corrigidas</div>
+    <div style="color:#374151; line-height:1.4;">
+      ✅ Do mês: <b>${doMes}</b><br/>
+      🕒 Atrasados: <b>${atrasadas}</b>
+    </div>
+  `;
+
+  tooltip.style.display = 'block';
+}
+
+window.showDashboardCorrectedTooltip = showDashboardCorrectedTooltip;
+
+
     function renderAdminDashboard() {
   // 🔒 TRAVA ABSOLUTA DE ROLE
   if (!currentUserData?.isAdmin && !currentUserData?.isDeveloper) {
@@ -2181,6 +2367,32 @@ const correctedRids = allRids
     const cd = toDateSafe(r.conclusionDate);
     return isInMonthYear(cd, dashMonth, dashYear);
   }).length;
+  
+  // ✅ Corrigidas do mês (lista) — pra quebrar entre "do mês" e "atrasados corrigidos agora"
+const correctedInMonthList = allRids
+  .filter(r => !r.deleted)
+  .filter(r => {
+    const st = String(r.status || '').toUpperCase();
+    if (st !== 'CORRIGIDO' && st !== 'ENCERRADO') return false;
+
+    // respeita setor do dashboard
+    if (dashSector && r.sector !== dashSector) return false;
+
+    const cd = toDateSafe(r.conclusionDate);
+    return isInMonthYear(cd, dashMonth, dashYear);
+  });
+
+// ✅ Total corrigidas no mês (mantém igual ao seu correctedRids, mas agora consistente com setor)
+const corrigidasMesAtual = correctedInMonthList.length;
+
+// ✅ Dentre as corrigidas do mês, quais eram atrasadas (criadas antes do mês/ano atual)?
+const corrigidasAtrasadasNesteMes = correctedInMonthList.filter(r => {
+  const created = toDateSafe(r.createdAt);
+  return isBeforeMonthYear(created, dashMonth, dashYear);
+}).length;
+
+// ✅ Corrigidas "do próprio mês" (criadas no mês e corrigidas no mês)
+const corrigidasDoMes = corrigidasMesAtual - corrigidasAtrasadasNesteMes;
 
   // ✅ ENCERRADOS DO MÊS (somente ENCERRADO) — usa conclusionDate
 const encerradosRids = allRids
@@ -2190,6 +2402,23 @@ const encerradosRids = allRids
     const cd = toDateSafe(r.conclusionDate);
     return isInMonthYear(cd, dashMonth, dashYear);
   }).length;
+
+// 🗑️ REMOVIDOS DO MÊS (usa deletedAt) + respeita setor
+const removidosRids = allRids
+  .filter(r => {
+    // setor do dashboard
+    if (dashSector) return r.sector === dashSector;
+    return true;
+  })
+  .filter(r => (r.deleted === true) || (String(r.status || '').toUpperCase() === 'EXCLUIDO') || (String(r.status || '').toUpperCase() === 'EXCLUÍDO'))
+  .filter(r => {
+    const dd = toDateSafe(r.deletedAt);
+    return isInMonthYear(dd, dashMonth, dashYear);
+  }).length;
+
+// ✅ Total que aparece no card
+const encerradosEremovidosTotal = encerradosRids + removidosRids;
+
 
 // ✅ Semana útil: segunda (00:00) até sábado (23:59:59) — usando createdAt
 const now = new Date();
@@ -2255,6 +2484,7 @@ const monthlyUserStats = Object.values(ridsByUser)
       const config = window.elementSdk ? window.elementSdk.config : defaultConfig;
 
       const app = document.getElementById('app');
+
       app.innerHTML = `
         <div class="h-full flex flex-col">
           <!-- Header -->
@@ -2332,6 +2562,7 @@ const monthlyUserStats = Object.values(ridsByUser)
           <!-- Main Content -->
           <div class="flex-1 overflow-auto p-8" style="background-color: #dfdfdf;">
             <div class="max-w-7xl mx-auto">
+
               <div class="flex items-center justify-between mb-8">
                 <h1 class="text-3xl font-bold text-gray-800">Dashboard</h1>
                 
@@ -2444,7 +2675,7 @@ const monthlyUserStats = Object.values(ridsByUser)
 </div>
 </div>
 
-              <!-- Stats Cards (SLIM + ÍCONE PEQUENO - estilo IMG 1) -->
+        <!-- Stats Cards (SLIM + ÍCONE PEQUENO - estilo IMG 1) -->
 <div class="grid grid-cols-2 md:grid-cols-6 gap-3 md:gap-5 mb-6">
 
   <!-- TOTAL -->
@@ -2493,20 +2724,27 @@ const monthlyUserStats = Object.values(ridsByUser)
     </div>
   </div>
 
-  <!-- CORRIGIDAS -->
-  <div class="stats-slim-card card-hover" style="background:#f0fdf4;">
-    <div class="stats-slim-row">
-      <div class="stats-slim-left">
-        <div class="stats-slim-icon" style="background-color:#22c55e;">
-          <svg class="text-white" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
-          </svg>
-        </div>
-        <p class="stats-slim-title">Corrigidas</p>
+<!-- CORRIGIDAS -->
+<div
+  class="stats-slim-card card-hover"
+  style="background:#f0fdf4;"
+  onmouseenter="showDashboardCorrectedTooltip(${corrigidasDoMes}, ${corrigidasAtrasadasNesteMes})"
+  onmousemove="moveDeletedRidTooltip(event)"
+  onmouseleave="hideDeletedRidTooltip()"
+>
+  <div class="stats-slim-row">
+    <div class="stats-slim-left">
+      <div class="stats-slim-icon" style="background-color:#22c55e;">
+        <svg class="text-white" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+        </svg>
       </div>
-      <p class="stats-slim-value text-green-600">${correctedRids}</p>
+      <p class="stats-slim-title">Corrigidas</p>
     </div>
+    <p class="stats-slim-value text-green-600">${corrigidasMesAtual}</p>
   </div>
+</div>
+
 
   <!-- ATRASADOS -->
   <div class="stats-slim-card card-hover" style="background:#fff1f2;">
@@ -2523,8 +2761,14 @@ const monthlyUserStats = Object.values(ridsByUser)
     </div>
   </div>
 
-  <!-- ENCERRADOS -->
-<div class="stats-slim-card card-hover" style="background:#f3f4f6;">
+<!-- ENCERRADOS + REMOVIDOS -->
+<div
+  class="stats-slim-card card-hover"
+  style="background:#f3f4f6;"
+  onmouseenter="showDashboardClosedRemovedTooltip(${encerradosRids}, ${removidosRids})"
+  onmousemove="moveDeletedRidTooltip(event)"
+  onmouseleave="hideDeletedRidTooltip()"
+>
   <div class="stats-slim-row">
     <div class="stats-slim-left">
       <div class="stats-slim-icon" style="background-color:#9ca3af;">
@@ -2532,15 +2776,17 @@ const monthlyUserStats = Object.values(ridsByUser)
           <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
         </svg>
       </div>
-      <p class="stats-slim-title">Encerrados</p>
+      <p class="stats-slim-title leading-tight">
+  Encerrados e<br>Removidos
+</p>
     </div>
-    <p class="stats-slim-value text-gray-700">${encerradosRids}</p>
+    <p class="stats-slim-value text-gray-700">${encerradosEremovidosTotal}</p>
   </div>
 </div>
 
 
-</div>
 
+</div>
 
               <div class="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-8 mb-8">
                 <!-- Chart -->
@@ -2620,6 +2866,7 @@ const monthlyUserStats = Object.values(ridsByUser)
     </div>
   </div>
 </div>
+
 
                 <!-- Top Emitters -->
                 <div class="rounded-xl shadow-lg p-4 md:p-6 bg-white">
@@ -2958,9 +3205,8 @@ function renderMyRidsPage() {
 
   const config = window.elementSdk ? window.elementSdk.config : defaultConfig;
   const app = document.getElementById('app');
-  const myStats = calcMyPerformanceStats(myRids);
-  const myPerfHTML = renderMyPerformancePanelHTML(myStats);
-
+const myStats = calcMyPerformanceStats(myRids);
+const myPerfHTML = renderMyPerformancePanelHTML(myStats);
 
   app.innerHTML = `
     <div class="h-full flex flex-col">
@@ -2972,6 +3218,7 @@ function renderMyRidsPage() {
       <div class="flex-1 overflow-auto p-8" style="background-color:#dfdfdf;">
         <div class="max-w-5xl mx-auto">
 ${myPerfHTML}
+
           <h1 class="text-3xl font-bold text-gray-800 mb-6">
             Meus RIDs
           </h1>
@@ -3297,7 +3544,7 @@ const atrasados = allRids
   ${atrasados.length > 0 ? `
     <details class="bg-white rounded-xl shadow-lg">
       <summary class="cursor-pointer select-none px-5 py-4 font-extrabold text-gray-800 flex items-center justify-between">
-        <span>🚨 Atrasados (mês anterior ou antes)</span>
+        <span>🚨 Atrasados (mêses anteriores)</span>
         <span class="px-3 py-1 rounded-lg text-xs font-bold bg-red-100 text-red-700">${atrasados.length}</span>
       </summary>
       <div class="px-4 pb-4 space-y-4">
@@ -3703,51 +3950,12 @@ if (select.options.length === 1) {
     }
 
 function showRidNotification(rid) {
-// 🔊 áudio global (não cria toda hora)
-const NOTIFY_SOUND_URL = new URL("notify.ogg", window.location.href).toString();
-const notifyAudio = new Audio(NOTIFY_SOUND_URL);
-notifyAudio.volume = 0.8;
-notifyAudio.preload = "auto";
-
-let audioUnlocked = false;
-
-function unlockAudio() {
-  if (audioUnlocked) return;
-
-  // truque pra “desbloquear” autoplay
-  notifyAudio.muted = true;
-
-  notifyAudio.play()
-    .then(() => {
-      notifyAudio.pause();
-      notifyAudio.currentTime = 0;
-      notifyAudio.muted = false;
-      audioUnlocked = true;
-      console.log("🔊 Áudio desbloqueado!");
-    })
-    .catch((e) => {
-      console.warn("Ainda bloqueado:", e);
-    });
-}
-
-// desbloqueia com qualquer interação do usuário
-document.addEventListener("click", unlockAudio);
-document.addEventListener("touchstart", unlockAudio);
-document.addEventListener("keydown", unlockAudio);
-
-function showRidNotification(rid) {
-  // 🔒 se ainda não desbloqueou, tenta desbloquear e sai
-  if (!audioUnlocked) {
-    unlockAudio();
-    console.log("⚠️ Clique na tela 1x para liberar o som.");
-    return;
-  }
-
-  notifyAudio.currentTime = 0;
-  notifyAudio.play().catch((e) => {
-    console.warn("Som bloqueado/erro:", e);
+  // 🔊 Apenas som (sem popup visual)
+  const audio = new Audio("/notify.ogg");
+  audio.volume = 0.8;
+  audio.play().catch(() => {
+    console.log("Som bloqueado pelo navegador até o usuário interagir.");
   });
-}
 }
 
     async function showRidDetails(ridId) {
@@ -3883,12 +4091,24 @@ const rid = { id: ridSnap.id, ...ridSnap.data() };
 
             <div class="mb-6">
               <label class="block text-sm font-bold text-gray-500 mb-2">Descrição do Problema</label>
-              <textarea name="description" rows="4" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required>${rid.description}</textarea>
+              <textarea 
+  name="description" 
+  rows="1"
+  data-autogrow="1"
+  class="w-full px-4 py-2 border border-gray-300 rounded-lg textarea-autogrow" 
+  required
+>${rid.description || ''}</textarea>
             </div>
 
             <div class="mb-6">
               <label class="block text-sm font-bold text-gray-500 mb-2">Ação Imediata</label>
-              <textarea name="immediateAction" rows="3" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required>${rid.immediateAction}</textarea>
+             <textarea 
+  name="immediateAction" 
+  rows="1"
+  data-autogrow="1"
+  class="w-full px-4 py-2 border border-gray-300 rounded-lg textarea-autogrow" 
+  required
+>${rid.immediateAction || ''}</textarea>
             </div>
 
             ${isAdmin() ? `
@@ -3963,7 +4183,8 @@ const rid = { id: ridSnap.id, ...ridSnap.data() };
         </div>
       `;
   document.body.appendChild(modal);
-
+// ✅ ajusta altura dos textareas (precisa ser depois de appendChild)
+autoGrowAllTextareas(modal);
 // 🔒 Admin: trava tudo e libera só os campos permitidos
 // ✅ Developer: não aplica trava (edita tudo)
 const applyLock = () => {
@@ -3994,11 +4215,17 @@ const applyLock = () => {
         return;
       }
 
-      // trava TODO o resto (somente admin)
       el.disabled = true;
-      el.readOnly = true;
-      el.style.pointerEvents = "none";
-      el.classList.add("bg-gray-100", "cursor-not-allowed");
+el.readOnly = true;
+
+// ✅ textarea: deixa clicar/selecionar e garante reflow bom
+if (el.tagName === "TEXTAREA") {
+  el.style.pointerEvents = "auto";
+} else {
+  el.style.pointerEvents = "none";
+}
+
+el.classList.add("bg-gray-100", "cursor-not-allowed");
     });
 };
 
@@ -4649,21 +4876,22 @@ const ridRequests = await Promise.all(
                 </p>
               </div>
 
-              <div class="flex gap-2 mt-4">
-                <button
-                  onclick="approveRidDeletion('${req.id}', '${req.ridId}', '${req.requesterId}')"
-                  class="flex-1 py-2 bg-green-500 text-white rounded-lg font-bold hover:bg-green-600"
-                >
-                  Aprovar
-                </button>
+             <div class="flex gap-2 mt-4">
+  <button
+    onclick="approveRidDeletionRequest('${req.id}')"
+    class="flex-1 py-2 bg-green-500 text-white rounded-lg font-bold hover:bg-green-600"
+  >
+    Aprovar
+  </button>
 
-                <button
-                  onclick="rejectRidDeletion('${req.id}', '${req.requesterId}')"
-                  class="flex-1 py-2 bg-red-500 text-white rounded-lg font-bold hover:bg-red-600"
-                >
-                  Rejeitar
-                </button>
-              </div>
+  <button
+    onclick="rejectRidDeletionRequest('${req.id}')"
+    class="flex-1 py-2 bg-red-500 text-white rounded-lg font-bold hover:bg-red-600"
+  >
+    Rejeitar
+  </button>
+</div>
+
             </div>
           `).join('')
       }
@@ -4742,55 +4970,93 @@ const ridRequests = await Promise.all(
       updateRequestsBadge();
     }
 
-    async function approveRidDeletion(requestId, ridId, requesterId) {
-      try {
-        const rid = allRids.find(r => r.id === ridId);
-const ridRef = db.collection('rids').doc(ridId);
-const ridSnap = await ridRef.get();
-const ridData = ridSnap.data();
+  async function approveRidDeletion(requestId, ridId, requesterId) {
+  try {
+    // 🔒 trava a UI na aba Solicitações durante a aprovação
+window.currentPage = 'requests';
 
-const previousObs = ridData?.observations || '';
+    const rid = allRids.find(r => r.id === ridId);
 
-const deleteNote =
+    const ridRef = db.collection('rids').doc(ridId);
+    const ridSnap = await ridRef.get();
+    const ridData = ridSnap.data() || {};
+
+    // ✅ pega o motivo digitado pelo líder na solicitação (deleteRequests.reason)
+const reqSnap = await db.collection('deleteRequests').doc(requestId).get();
+const reqData = reqSnap.exists ? (reqSnap.data() || {}) : {};
+const ridDeletionReason = (reqData.reason || '').trim() || 'Motivo não informado';
+
+
+    const previousObs = ridData?.observations || '';
+
+    const deleteNote =
 `[${new Date().toLocaleDateString()}] RID removido do sistema
-Motivo: Solicitação de exclusão aprovada
-Removido por: ${rid?.requesterName || 'Sistema'}`;
+Motivo: ${ridDeletionReason}
+Removido por: ${currentUserData?.name || 'DEV'}`;
 
-await ridRef.update({
-  deleted: true,
-  status: 'EXCLUIDO',
-  deletedAt: firebase.firestore.FieldValue.serverTimestamp(),
-  deletedBy: {
-    uid: requesterId,
-    name: rid?.requesterName || 'Solicitação',
-    role: 'REQUEST'
-  },
-  deleteReason: 'Solicitação de exclusão aprovada',
-  observations: previousObs
-    ? previousObs + '\n\n' + deleteNote
-    : deleteNote
-});
+    // ✅ Mantém a "funcionalidade de e-mail" sem usar updates:
+    // reseta flags de envio (útil se você tiver lógica de reativar/reverter exclusão)
+    // e evita ficar "travado" com emailSent=true
+    await ridRef.update({
+      // exclusão lógica
+      deleted: true,
+      status: 'EXCLUIDO',
+      deletedAt: firebase.firestore.FieldValue.serverTimestamp(),
 
+      // ✅ quem aprovou/excluiu foi o DEV logado (não o requester)
+      deletedBy: {
+        uid: currentUser?.uid || null,
+        name: currentUserData?.name || 'DEV',
+        role: isDeveloper() ? 'DEVELOPER' : 'ADMIN'
+      },
 
-        await db.collection('deleteRequests').doc(requestId).update({ status: 'approved' });
-        
-        await createNotification(requesterId, {
-          type: 'request_approved',
-          ridId: '',
-          ridNumber: rid?.ridNumber || '',
-          title: 'Solicitação Aprovada',
-          message: `Sua solicitação de exclusão da RID #${rid?.ridNumber || 'N/A'} foi aprovada`,
-          ridLocation: null,
-          deadline: null
-        });
+      deleteReason: ridDeletionReason,
 
-        showToast('RID excluída com sucesso!');
-      } catch (error) {
-        showToast('Erro ao excluir RID: ' + error.message, 'error');
+      // ✅ histórico no campo observações
+      observations: previousObs
+        ? previousObs + '\n\n' + deleteNote
+        : deleteNote,
+
+      // ✅ reset de e-mail (mantém comportamento saudável do sistema)
+      emailSent: false,
+      emailSentAt: null,
+
+      // opcional: se você usa esse campo pra controlar notificação de líder
+      // deixe null pra forçar nova avaliação caso o RID "volte" algum dia
+      lastNotifiedLeader: null
+    });
+
+    // ✅ marca solicitação como aprovada (com auditoria)
+    await db.collection('deleteRequests').doc(requestId).update({
+      status: 'approved',
+      reviewedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      reviewedBy: {
+        uid: currentUser?.uid || null,
+        name: currentUserData?.name || 'DEV'
       }
-    }
+    });
 
-   async function rejectRidDeletion(requestId, requesterId) {
+    // ✅ notifica quem solicitou (requesterId)
+    await createNotification(requesterId, {
+      type: 'request_approved',
+      ridId: '',
+      ridNumber: rid?.ridNumber || '',
+      title: 'Solicitação Aprovada',
+      message: `Sua solicitação de exclusão do RID #${rid?.ridNumber || 'N/A'} foi aprovada`,
+      ridLocation: null,
+      deadline: null
+    });
+// ✅ garante que a UI volta pra Solicitações
+window.currentPage = 'requests';
+
+    renderRequestsPage();
+    showToast('RID excluído com sucesso!');
+  } catch (error) {
+    showToast('Erro ao excluir RID: ' + error.message, 'error');
+  }
+}
+
+async function rejectRidDeletion(requestId, requesterId) {
   try {
     await db.collection('deleteRequests').doc(requestId).update({
       status: 'rejected',
@@ -4822,6 +5088,31 @@ await ridRef.update({
 window.approveRidDeletion = approveRidDeletion;
 window.rejectRidDeletion = rejectRidDeletion;
 
+
+    async function approveEmployeeDeletion(requestId, userId, requesterId) {
+      try {
+        const user = allUsers.find(u => u.id === userId);
+        
+        await db.collection('users').doc(userId).delete();
+        await db.collection('employeeDeleteRequests').doc(requestId).update({ status: 'approved' });
+        
+        await createNotification(requesterId, {
+          type: 'request_approved',
+          ridId: '',
+          ridNumber: '',
+          title: 'Solicitação Aprovada',
+          message: `Sua solicitação de exclusão de ${user?.name || 'funcionário'} foi aprovada`,
+          ridLocation: null,
+          deadline: null
+        });
+
+        showToast('Funcionário excluído com sucesso!');
+        await loadUsers();
+        renderRequestsPage();
+      } catch (error) {
+        showToast('Erro ao excluir funcionário: ' + error.message, 'error');
+      }
+    }
 
     async function rejectEmployeeDeletion(requestId, requesterId) {
       try {
@@ -5664,7 +5955,7 @@ const sectorRanking = Object.entries(sectorRisk)
 </div>
 
 <!-- Painel de Filtros -->
-<div
+  <div
   id="devFilterPanel"
   class="hidden mb-8 bg-white rounded-lg shadow-md p-5 border"
   style="border-color:#e5e7eb;"
@@ -5873,8 +6164,8 @@ const sectorRanking = Object.entries(sectorRisk)
           Setor: ${r.sector || '—'}
         </span>
 
-        <span class="text-gray-500 truncate">
-          Motivo: ${r.deleteReason || 'Não informado'}
+        <span class="text-gray-500 overflow-hidden text-ellipsis line-clamp-3">
+          <b>Motivo:</b> ${r.deleteReason || 'Não informado'}
         </span>
       </div>
 
@@ -6374,7 +6665,7 @@ async function loadImageAsBase64(url) {
             <div class="px-2 md:px-8">
               <nav class="flex overflow-x-auto space-x-1">
                 <button onclick="renderEmployeeDashboard()" class="px-3 md:px-6 py-3 font-semibold hover:bg-gray-100 transition-colors whitespace-nowrap text-sm md:text-base text-gray-700">
-                  Minhas RIDs
+                  Meus RIDs
                 </button>
                 <button onclick="renderEmployeeDesignatedPage()" class="px-3 md:px-6 py-3 font-semibold border-b-4 whitespace-nowrap text-sm md:text-base" style="border-color: #a8d5e2; color: #6b9eb0;">
                   Designadas
@@ -6385,7 +6676,7 @@ async function loadImageAsBase64(url) {
 
           <div class="flex-1 overflow-auto p-8" style="background-color: #dfdfdf;">
             <div class="max-w-7xl mx-auto">
-              <h1 class="text-3xl font-bold text-gray-800 mb-8">Minhas RIDs Designadas</h1>
+              <h1 class="text-3xl font-bold text-gray-800 mb-8">Meus RIDs Designadas</h1>
 
               ${myDesignatedRids.length === 0 ? 
                 '<div class="bg-white rounded-xl shadow-lg p-12 text-center"><p class="text-gray-500 text-lg">Você não possui RIDs designadas no momento</p></div>' :
@@ -6433,7 +6724,7 @@ async function loadImageAsBase64(url) {
             <div class="px-2 md:px-8">
               <nav class="flex overflow-x-auto space-x-1">
                 <button onclick="renderEmployeeDashboard()" class="px-3 md:px-6 py-3 font-semibold border-b-4 whitespace-nowrap text-sm md:text-base" style="border-color: #a8d5e2; color: #6b9eb0;">
-                  Minhas RIDs
+                  Meus RIDs
                 </button>
               </nav>
             </div>
@@ -6441,7 +6732,7 @@ async function loadImageAsBase64(url) {
 
           <div class="flex-1 overflow-auto p-8" style="background-color: #dfdfdf;">
             <div class="max-w-7xl mx-auto">
-               ${myPerfHTML}
+              ${myPerfHTML}
               <div class="flex items-center justify-between mb-8">
                 <h1 class="text-3xl font-bold text-gray-800">Meus RIDs</h1>
                 <button onclick="showCreateRidModal()" 
@@ -6520,6 +6811,31 @@ ${
                     ? 'Correção realizada pelo próprio emissor no momento da abertura do RID.'
                     : 'Aguardando detalhamento da ação corretiva.'
                 )
+          }
+        </p>
+      </div>
+    `
+    : ''
+}
+
+<!-- 🗑️ RID excluído -->
+${
+  rid.status === 'EXCLUIDO'
+    ? `
+      <div class="mt-3 p-3 rounded-lg bg-gray-100 border border-gray-300">
+        <p class="text-sm font-bold text-gray-700 mb-1">
+          RID removido do fluxo operacional de segurança
+        </p>
+
+        <p class="text-sm text-gray-600 mb-1">
+          Motivo da remoção:
+        </p>
+
+        <p class="text-sm text-gray-800 whitespace-pre-line">
+          ${
+            rid.deleteReason && String(rid.deleteReason).trim() !== ''
+              ? rid.deleteReason
+              : 'Motivo não informado'
           }
         </p>
       </div>
@@ -6743,7 +7059,7 @@ window.clearSearchFilters = clearSearchFilters;
   </span>
 
   <span class="absolute right-3 text-[10px] text-gray-400">
-    v2.9
+    v2.7
   </span>
 </footer>
 </body>
