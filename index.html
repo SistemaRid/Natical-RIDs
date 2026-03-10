@@ -785,6 +785,17 @@ body.ui-compact #statusRidsCard {
   }
 
 }
+
+@media (max-width: 767px) {
+  /* reduz só em mobile */
+  .px-4.md\\:px-8.py-4.shadow-lg,
+  .px-4.py-4.shadow-lg { /* cobre variações de classes */
+    padding-top: .5rem !important;   /* equivalente a py-2 */
+    padding-bottom: .5rem !important;
+  }
+}
+
+
   </style>
   <style>@view-transition { navigation: auto; }</style>
  </head>
@@ -942,6 +953,10 @@ function listenRidsRealtimeEmployee() {
     window.unsubscribeRids = null;
   }
 
+  if (!currentUserData || !currentUserData.cpf) {
+  console.warn("CPF ainda não carregado, aguardando...");
+}
+
   const myUid = currentUser.uid;
   const myCpf = currentUserData?.cpf ? String(currentUserData.cpf).trim() : null;
 
@@ -994,6 +1009,11 @@ function listenRidsRealtimeEmployee() {
       } catch (e) {
         console.warn('Erro ao re-renderizar após mesclar RIDs:', e);
       }
+      // ✅ funcionário: garante que a tela "Meus RIDs" atualize quando os dados chegarem
+if (window._employeeFirstSnapshot) {
+  window._employeeFirstSnapshot = false;
+  try { renderEmployeeDashboard(); } catch(e) {}
+}
     }, 0);
   }
 
@@ -1012,7 +1032,7 @@ function listenRidsRealtimeEmployee() {
   }
 
   // Lista de nomes de campo possíveis usados para CPF pelo site público
-  const cpfFieldCandidates = ['emitterCpf', 'cpf', 'emitter_document', 'emitterDocument', 'document'];
+  const cpfFieldCandidates = ['emitterCpf'];
 
   // Listener(s) por CPF (cria apenas se myCpf existir)
   if (myCpf) {
@@ -1037,19 +1057,25 @@ function listenRidsRealtimeEmployee() {
     });
   }
 
-  // Listener opcional: _importedFrom == 'public-site' (se vocês usarem essa marcação)
+  // Listener opcional: importados do site público, mas AMARRADO ao CPF do usuário
+if (myCpf) {
   try {
-    const qImport = db.collection('rids').where('_importedFrom', '==', 'public-site');
+    const qImport = db.collection('rids')
+      .where('_importedFrom', '==', 'public-site')
+      .where('emitterCpf', '==', myCpf);
+
     const unsubImport = qImport.onSnapshot(snap => {
       snap.docs.forEach(d => docsMap.set(d.id, d));
       mergeAndPublish();
     }, err => {
-      console.debug('Listener _importedFrom erro (pode exigir índice):', err);
+      console.debug('Listener _importedFrom+emitterCpf erro:', err);
     });
+
     unsubs.push(unsubImport);
   } catch (e) {
-    console.debug('Ignorando listener _importedFrom:', e);
+    console.debug('Ignorando listener _importedFrom+emitterCpf:', e);
   }
+}
 
   // função para cancelar todos os listeners
   window.unsubscribeRids = function() {
@@ -1064,6 +1090,82 @@ function listenRidsRealtimeEmployee() {
 }
 // ---------- FIM DA SUBSTITUIÇÃO ----------
 
+
+function listenMaintenancesRealtime() {
+  stopMaintenancesListener();
+
+  if (!currentUser || !currentUser.uid) {
+    console.warn("listenMaintenancesRealtime: usuário não disponível");
+    return () => {};
+  }
+
+  const docsMap = new Map();
+  const unsubs = [];
+
+  function publishMaintenances() {
+    allMaintenances = Array.from(docsMap.values()).sort((a, b) => {
+      const ta = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
+      const tb = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+      return tb - ta;
+    });
+
+    console.log("Manutenções carregadas:", allMaintenances);
+
+    try {
+      if (window.currentPage === "maintenances" && typeof renderMaintenancesPage === "function") {
+        renderMaintenancesPage();
+      }
+
+      if (window.currentPage === "myrids" && typeof renderMyRidsPage === "function") {
+        renderMyRidsPage();
+      }
+
+      if (window.currentPage === "employee-dashboard" && typeof renderEmployeeDashboard === "function") {
+        renderEmployeeDashboard();
+      }
+    } catch (error) {
+      console.warn("Erro ao renderizar páginas de manutenção:", error);
+    }
+  }
+
+  function saveSnapshot(snapshot) {
+    snapshot.docs.forEach(doc => {
+      docsMap.set(doc.id, {
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+
+    publishMaintenances();
+  }
+
+  const queryAssigned = db.collection("maintenances")
+    .where("assignedTo", "==", currentUser.uid);
+
+  const queryRequester = db.collection("maintenances")
+    .where("requesterId", "==", currentUser.uid);
+
+  const unsubAssigned = queryAssigned.onSnapshot(
+    snapshot => saveSnapshot(snapshot),
+    error => console.error("Erro no listener assignedTo:", error)
+  );
+
+  const unsubRequester = queryRequester.onSnapshot(
+    snapshot => saveSnapshot(snapshot),
+    error => console.error("Erro no listener requesterId:", error)
+  );
+
+  unsubs.push(unsubAssigned, unsubRequester);
+
+  unsubscribeMaintenances = function () {
+    unsubs.forEach(unsub => {
+      try { unsub(); } catch (e) {}
+    });
+    unsubscribeMaintenances = null;
+  };
+
+  return unsubscribeMaintenances;
+}
 // =========================
 // 📊 MEU DESEMPENHO (FUNCIONÁRIO)
 // =========================
@@ -1077,6 +1179,10 @@ function getMonthStartEnd(date = new Date()) {
 function isResolvedStatus(status) {
   const st = String(status || '').toUpperCase();
   return st === 'CORRIGIDO' || st === 'ENCERRADO';
+}
+
+function getPersonalMonthlyGoal(userData) {
+  return (userData?.isAdmin || userData?.isDeveloper) ? 8 : 4;
 }
 
 function calcMyPerformanceStats(myRids) {
@@ -1100,7 +1206,17 @@ function calcMyPerformanceStats(myRids) {
   const monthTotal = monthRids.length;
 
   // ✅ meta pessoal (mês)
-  const metaPessoal = 4;
+let metaPessoal = getPersonalMonthlyGoal(currentUserData);
+
+// desconto por férias no mês (proporcional)
+if (currentUserData?.vacationPeriod?.start && currentUserData?.vacationPeriod?.end) {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
+
+  // usa sua função calcularMetaMensalAutomatica para 1 usuário só
+  metaPessoal = Math.ceil(calcularMetaMensalAutomatica([currentUserData], year, month));
+}
   const bateuMeta = monthTotal >= metaPessoal;
   const faltamMeta = Math.max(metaPessoal - monthTotal, 0);
 
@@ -1127,7 +1243,7 @@ function calcMyPerformanceStats(myRids) {
         <div>
           <h2 class="text-sm md:text-lg font-bold text-gray-800">📊 Meu desempenho</h2>
           <p class="text-[11px] md:text-sm text-gray-500 leading-tight">
-            Geral + mês atual
+            Geral + mês atual (Somente RIDs)
           </p>
         </div>
       </div>
@@ -1253,6 +1369,13 @@ unsubscribeLeader = db.collection("rids")
     let showMobileFilters = false;
     let showMobileReportFilters = false;
 
+    // =========================
+    // MAINTENANCES - ESTADO GLOBAL
+    // =========================
+    let allMaintenances = [];
+    let unsubscribeMaintenances = null;
+    let maintenanceResolvedVisible = false;
+
     // ===== estado para histórico =====
     let allRidHistory = [];
     window.ridHistoryUnsub = null;
@@ -1273,6 +1396,49 @@ window.unblockAutoRender = function() {
 window.isAutoRenderBlocked = function() {
   return (window.preventAutoRenderCount || 0) > 0;
 };
+
+
+    // metas
+    function calcularMetaMensalAutomatica(users, year, month) {
+  if (!users || users.length === 0) return 0;
+
+  const totalDiasMes = new Date(year, month, 0).getDate(); // month 1..12
+  let metaTotal = 0;
+
+  users.forEach(user => {
+    if (!user) return;
+
+    const metaBase = (user.isAdmin || user.isDeveloper) ? 8 : 4;
+
+    let descontoFerias = 0;
+
+    if (user.vacationPeriod?.start && user.vacationPeriod?.end) {
+      const inicioFerias = user.vacationPeriod.start.toDate
+        ? user.vacationPeriod.start.toDate()
+        : new Date(user.vacationPeriod.start);
+
+      const fimFerias = user.vacationPeriod.end.toDate
+        ? user.vacationPeriod.end.toDate()
+        : new Date(user.vacationPeriod.end);
+
+      const inicioMes = new Date(year, month - 1, 1);
+      const fimMes = new Date(year, month, 0);
+
+      const inicioReal = inicioFerias > inicioMes ? inicioFerias : inicioMes;
+      const fimReal = fimFerias < fimMes ? fimFerias : fimMes;
+
+      if (fimReal >= inicioReal) {
+        const diasFerias = Math.floor((fimReal - inicioReal) / 86400000) + 1;
+        const fator = diasFerias / totalDiasMes;
+        descontoFerias = metaBase * fator;
+      }
+    }
+
+    metaTotal += (metaBase - descontoFerias);
+  });
+
+  return Math.ceil(metaTotal);
+}
 
     // Default Config
     const defaultConfig = {
@@ -1385,6 +1551,25 @@ async function getNextRidNumberSafe() {
   });
 }
 
+async function getNextMaintenanceNumberSafe() {
+  const counterRef = db.collection("counters").doc("maintenances");
+
+  return db.runTransaction(async (transaction) => {
+    const doc = await transaction.get(counterRef);
+
+    if (!doc.exists) {
+      throw new Error("Documento counters/maintenances não existe");
+    }
+
+    const last = Number(doc.data().lastNumber || 0);
+    const next = last + 1;
+
+    transaction.update(counterRef, { lastNumber: next });
+
+    return "MAN-" + String(next).padStart(5, "0");
+  });
+}
+
 function spawnConfetti(card) {
   if (!card) return;
 
@@ -1422,6 +1607,12 @@ function stopRidHistoryListener() {
   }
 }
 
+function stopMaintenancesListener() {
+  if (unsubscribeMaintenances) {
+    try { unsubscribeMaintenances(); } catch (e) {}
+    unsubscribeMaintenances = null;
+  }
+}
 
     function formatCPF(cpf) {
       return cpf.replace(/\D/g, '')
@@ -1501,7 +1692,7 @@ function toFirestoreDateFromInput(dateStr) {
   const monthRaw = monthSelect?.value ?? ''; // "all", "" (mês atual) ou "1".."12"
   const showAllMonths = monthRaw === 'all';
   const month = (monthRaw && monthRaw !== 'all') ? parseInt(monthRaw, 10) : (now.getMonth() + 1);
-  const year = yearInput?.value ? parseInt(yearInput, 10) : now.getFullYear();
+  const year = yearInput?.value ? parseInt(yearInput.value, 10) : now.getFullYear();
 
   // 🔹 FILTRO MÊS + ANO
   filtered = filtered.filter(r => {
@@ -1513,10 +1704,9 @@ function toFirestoreDateFromInput(dateStr) {
 
     if (!d || isNaN(d.getTime())) return false;
 
-    if (showAllMonths) {
-      // ----> SE "Todos os meses" escolhido: incluir TODOS os RIDs (sem filtrar por mês/ano)
-      return true;
-    }
+  if (showAllMonths) {
+  return d.getFullYear() === year;
+}
 
     // caso contrário: filtro por mês + ano (mês pode ser o atual quando monthRaw === '')
     return (
@@ -1677,25 +1867,49 @@ function toFirestoreDateFromInput(dateStr) {
 
 
 async function handleLogout() {
-  // 🔌 Para TODOS listeners
-  if (window.unsubscribeRids) {
-    window.unsubscribeRids();
-    window.unsubscribeRids = null;
-  }
+  try {
+    // 🔌 Para listener de RIDs
+    if (window.unsubscribeRids) {
+      try { window.unsubscribeRids(); } catch (e) {}
+      window.unsubscribeRids = null;
+    }
 
-  if (window.unsubscribeLeader) {
-    window.unsubscribeLeader();
-    window.unsubscribeLeader = null;
-  }
+    // 🔌 Para listener de líder
+    if (window.unsubscribeLeader) {
+      try { window.unsubscribeLeader(); } catch (e) {}
+      window.unsubscribeLeader = null;
+    }
 
-  // ⭐ faltava esse
-  if (window.ridHistoryUnsub) {
-    window.ridHistoryUnsub();
-    window.ridHistoryUnsub = null;
-  }
+    // 🔌 Para listener de histórico
+    if (window.ridHistoryUnsub) {
+      try { window.ridHistoryUnsub(); } catch (e) {}
+      window.ridHistoryUnsub = null;
+    }
 
-  await auth.signOut();
-  showToast("Logout realizado com sucesso");
+    // 🔌 Para listener de manutenções
+    if (unsubscribeMaintenances) {
+      try { unsubscribeMaintenances(); } catch (e) {}
+      unsubscribeMaintenances = null;
+    }
+
+    // 🔌 Para listener de deleteRequests
+    if (window.unsubscribeDeleteRequests) {
+      try { window.unsubscribeDeleteRequests(); } catch (e) {}
+      window.unsubscribeDeleteRequests = null;
+    }
+
+    // limpa estados em memória
+    allRids = [];
+    allMaintenances = [];
+    allRidHistory = [];
+    allDeleteRequests = [];
+
+    await auth.signOut();
+    showToast("Logout realizado com sucesso");
+  } catch (error) {
+    console.error("Erro no logout:", error);
+    showToast("Erro ao sair do sistema", "error");
+  }
 }
 
 function stopDeleteRequestsListener() {
@@ -1723,8 +1937,33 @@ function stopRidHistoryListener() {
       button.textContent = 'Enviando RID...';
 
       try {
-        const ridNumber = await getNextRidNumberSafe();
-        const leaderId = form.responsibleLeader.value;
+const leaderId = form.responsibleLeader.value || '';
+const selectedStatus = String(form.status?.value || '').toUpperCase();
+
+const leaderWarning = document.getElementById('leaderFloatingWarning');
+const leaderSelect = document.getElementById('responsibleLeaderSelect');
+
+if (leaderWarning) leaderWarning.classList.add('hidden');
+if (leaderSelect) {
+  leaderSelect.classList.remove('border-red-500', 'ring-2', 'ring-red-200');
+  leaderSelect.classList.add('border-gray-300');
+}
+
+if (selectedStatus === 'VENCIDO' && !leaderId) {
+  if (leaderWarning) leaderWarning.classList.remove('hidden');
+
+  if (leaderSelect) {
+    leaderSelect.classList.remove('border-gray-300');
+    leaderSelect.classList.add('border-red-500', 'ring-2', 'ring-red-200');
+    leaderSelect.focus();
+  }
+
+  button.disabled = false;
+  button.textContent = 'Enviar';
+  return;
+}
+
+const ridNumber = await getNextRidNumberSafe();
 
 let leaderName = null;
 
@@ -1742,9 +1981,9 @@ if (leaderId) {
 }
 
 const initialStatus =
-  form.status?.value === "CORRIGIDO"
-    ? "CORRIGIDO"
-    : "VENCIDO";
+  selectedStatus === 'CORRIGIDO'
+    ? 'CORRIGIDO'
+    : 'VENCIDO';
 
 
         
@@ -1844,6 +2083,7 @@ if (window.currentPage === 'designated') renderDesignatedPage();
     }
 
     async function updateRid(ridId, updates) {
+        const pageBeforeUpdate = window.currentPage;
       try {
       // =========================
   // 🔔 Validação de STATUS
@@ -1860,7 +2100,6 @@ if (updates.status === 'CORRIGIDO') {
     return false;
   }
 }
-
 
     // ENCERRADO
     if (updates.status === 'ENCERRADO') {
@@ -2057,18 +2296,26 @@ if (
   });
 }
 
-    // 🧹 Fecha o modal de detalhes
-    document.querySelectorAll('.modal-backdrop').forEach(m => m.remove());
+    // força manter a página atual após a atualização
+window.currentPage = pageBeforeUpdate;
 
-    // 🔥 NÃO usa loadRids — realtime já atualiza
-    // 🔒 Proteção de role
+// 🔒 Mantém exatamente a página em que o usuário estava
 if (!currentUserData?.isAdmin && !currentUserData?.isDeveloper) {
+  window.currentPage = 'employee';
   renderEmployeeDashboard();
+} else if (pageBeforeUpdate === 'designated') {
+  window.currentPage = 'designated';
+  renderDesignatedPage();
+} else if (pageBeforeUpdate === 'search') {
+  window.currentPage = 'search';
+  renderSearchPage();
+} else if (pageBeforeUpdate === 'employees') {
+  window.currentPage = 'employees';
+  renderEmployeesPage();
 } else {
+  window.currentPage = 'dashboard';
   renderAdminDashboard();
 }
-    if (window.currentPage === 'search') renderSearchPage();
-    if (window.currentPage === 'designated') renderDesignatedPage();
 
     showToast('RID atualizada com sucesso!');
     return true;
@@ -2090,7 +2337,6 @@ if (!currentUserData?.isAdmin && !currentUserData?.isDeveloper) {
 }
 }
 
-
     async function designateRid(ridId, leaderId, leaderName, observations, deadline) {
   const updates = {
     responsibleLeader: leaderId,
@@ -2110,6 +2356,65 @@ if (!currentUserData?.isAdmin && !currentUserData?.isDeveloper) {
     renderDesignatedPage?.();
     renderEmployeeDesignatedPage?.();
     renderDashboard?.();
+  }
+}
+
+async function createMaintenance(event) {
+  event.preventDefault();
+
+  try {
+
+    const equipment = document.getElementById("maintenanceEquipment").value.trim();
+    const sector = document.getElementById("maintenanceSector").value.trim();
+    const location = document.getElementById("maintenanceLocation").value.trim();
+    const priority = document.getElementById("maintenancePriority").value;
+    const assignedTo = document.getElementById("maintenanceAssignedTo").value;
+    const description = document.getElementById("maintenanceDescription").value.trim();
+
+    if (!equipment || !sector || !description || !assignedTo) {
+  alert("Preencha os campos obrigatórios.");
+  return;
+}
+
+    const maintenanceNumber = await getNextMaintenanceNumberSafe();
+    const assignedUser = (allUsers || []).find(u => u.id === assignedTo);
+    const assignedToName = assignedUser ? assignedUser.name : "";
+
+    const maintenanceData = {
+  maintenanceNumber,
+  equipment,
+  sector,
+  location,
+  priority,
+  description,
+
+  status: "ABERTA",
+
+  requesterId: currentUser.uid,
+  requesterName: currentUserData?.name || "",
+
+  createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+  updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+
+  concludedAt: null,
+  resolution: "",
+
+  assignedTo: assignedTo,
+  assignedToName: assignedToName
+};
+
+    await db.collection("maintenances").add(maintenanceData);
+
+    showToast("Manutenção criada com sucesso!");
+event.target.closest('.modal-backdrop')?.remove();
+
+if (window.currentPage === 'maintenances') {
+  renderMaintenancesPage();
+}
+
+  } catch (error) {
+    console.error("Erro ao criar manutenção:", error);
+    alert("Erro ao criar manutenção.");
   }
 }
 
@@ -3532,39 +3837,142 @@ async function loadUsers() {
 }
 
 
+// ====== META AUTOMÁTICA COM FÉRIAS ======
+function daysInMonthLocal(year, month1to12) {
+  return new Date(year, month1to12, 0).getDate(); // month 1..12
+}
 
-    async function loadMonthlyGoal() {
+function toDateAny(v) {
+  if (!v) return null;
+  if (v instanceof Date) return v;
+  if (typeof v === 'string') {
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof v.toDate === 'function') return v.toDate(); // Firestore Timestamp
+  return null;
+}
+
+function clampDate(d, min, max) {
+  if (d < min) return min;
+  if (d > max) return max;
+  return d;
+}
+
+// dias inteiros de interseção (inclui início e fim)
+function countOverlapDaysLocal(aStart, aEnd, bStart, bEnd) {
+  const start = clampDate(aStart, bStart, bEnd);
+  const end = clampDate(aEnd, bStart, bEnd);
+  if (end < start) return 0;
+
+  const s = new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime();
+  const e = new Date(end.getFullYear(), end.getMonth(), end.getDate()).getTime();
+  return Math.floor((e - s) / 86400000) + 1;
+}
+
+function calcAutoMonthlyGoal(users, year, month1to12) {
+  const totalDays = daysInMonthLocal(year, month1to12);
+  const monthStart = new Date(year, month1to12 - 1, 1, 0, 0, 0);
+  const monthEnd = new Date(year, month1to12 - 1, totalDays, 23, 59, 59);
+
+  let raw = 0;
+  let empBase = 0, leaderBase = 0;
+  let empEff = 0, leaderEff = 0;
+  let discount = 0;
+
+  (users || [])
+    .filter(u => u && typeof u.name === 'string') // só quem é usuário válido
+    .forEach(u => {
+      const isLeader = !!u.isAdmin || !!u.isDeveloper;
+      const base = isLeader ? 8 : 4;
+
+      if (isLeader) leaderBase += base;
+      else empBase += base;
+
+      const vac = u.vacationPeriod || null;
+      const vStart = toDateAny(vac?.start);
+      const vEnd = toDateAny(vac?.end);
+
+      let overlap = 0;
+      if (vStart && vEnd) overlap = countOverlapDaysLocal(vStart, vEnd, monthStart, monthEnd);
+
+      const activeDays = Math.max(0, totalDays - overlap);
+      const factor = activeDays / totalDays;
+      const effective = base * factor;
+
+      raw += effective;
+      discount += (base - effective);
+
+      if (isLeader) leaderEff += effective;
+      else empEff += effective;
+    });
+
+  return {
+    goalRaw: raw,
+    goal: Math.ceil(raw),
+    totalDays,
+    empBase,
+    leaderBase,
+    empEff,
+    leaderEff,
+    discount
+  };
+}
+
+// guarda detalhamento para mostrar no card se quiser
+window.monthlyGoalMeta = window.monthlyGoalMeta || null;
+window.monthlyGoalSource = window.monthlyGoalSource || 'auto'; // 'auto' | 'manual'
+
+  async function loadMonthlyGoal() {
   if (!currentUserData?.isAdmin && !currentUserData?.isDeveloper) {
     monthlyGoal = null;
+    window.monthlyGoalMeta = null;
+    window.monthlyGoalSource = 'auto';
     return;
   }
-      try {
-        const now = new Date();
-        const monthYear = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-        
-        const goalDoc = await db.collection('goals').doc(monthYear).get();
-        if (goalDoc.exists) {
-          monthlyGoal = goalDoc.data().goal;
-        } else {
-          monthlyGoal = null;
-        }
-        
-        updateGoalDisplay();
-      } catch (error) {
-        console.error('Error loading monthly goal:', error);
-      }
+
+  try {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth() + 1; // 1..12
+    const monthYear = `${year}-${String(month).padStart(2, '0')}`;
+
+    // 1) tenta meta manual (se existir)
+    const goalDoc = await db.collection('goals').doc(monthYear).get();
+    if (goalDoc.exists && goalDoc.data()?.goal > 0) {
+      monthlyGoal = Number(goalDoc.data().goal);
+      window.monthlyGoalMeta = null;
+      window.monthlyGoalSource = 'manual';
+      updateGoalDisplay();
+      return;
     }
+
+    // 2) se não tiver manual, calcula automática (com férias)
+    const meta = calcAutoMonthlyGoal(allUsers || [], year, month);
+    monthlyGoal = meta.goal;
+    window.monthlyGoalMeta = meta;
+    window.monthlyGoalSource = 'auto';
+
+    updateGoalDisplay();
+  } catch (error) {
+    console.error('Error loading monthly goal:', error);
+  }
+}
 
     function updateGoalDisplay() {
       const display = document.getElementById('monthGoalDisplay');
       const displayMobile = document.getElementById('monthGoalDisplayMobile');
       const cardMobile = document.getElementById('statusRidsCardMobile');
 
-      if (!display) {
-        // If display element doesn't exist yet, try again in a moment
-        setTimeout(updateGoalDisplay, 100);
-        return;
-      }
+     if (!display) {
+  // tenta novamente até o dashboard existir
+  window.__goalRetryCount = (window.__goalRetryCount || 0) + 1;
+  if (window.__goalRetryCount < 80) { // ~8s
+    setTimeout(updateGoalDisplay, 100);
+  }
+  return;
+}
+window.__goalRetryCount = 0;
       
       if (monthlyGoal && monthlyGoal > 0) {
   const filteredRids = getFilteredRids();
@@ -3589,8 +3997,25 @@ async function loadUsers() {
 
   if (currentCount >= monthlyGoal) {
     console.log('CONFETE DISPARADO', card);
-    display.textContent =
-      `Meta do Mês: ${currentCount}/${monthlyGoal} (${percentage}%) • Meta atingida!`;
+    const sourceText = (window.monthlyGoalSource === 'manual')
+  ? 'Meta definida'
+  : 'Meta automática';
+
+let extra = '';
+if (window.monthlyGoalSource === 'auto' && window.monthlyGoalMeta) {
+  const m = window.monthlyGoalMeta;
+  extra = ` • ${sourceText} (Férias: -${Math.round(m.discount * 10) / 10})`;
+} else {
+  extra = ` • ${sourceText}`;
+}
+
+if (currentCount >= monthlyGoal) {
+  display.textContent =
+    `Meta do Mês: ${currentCount}/${monthlyGoal} (${percentage}%) • Meta atingida!${extra}`;
+} else {
+  display.textContent =
+    `Meta do Mês: ${currentCount}/${monthlyGoal} (${percentage}%) • Faltam ${remaining} RID${remaining !== 1 ? 's' : ''} para conclusão${extra}`;
+}
     display.style.color = '#10b981'; // Green
 if (displayMobile) {
   displayMobile.textContent = display.textContent;
@@ -3654,6 +4079,20 @@ if (cardMobile) {
 }
 
     }
+
+    // mantém o texto da meta sempre visível (mesmo após re-render)
+function startGoalDisplayWatcher() {
+  if (window.__goalWatcherStarted) return;
+  window.__goalWatcherStarted = true;
+
+  setInterval(() => {
+    const el = document.getElementById('monthGoalDisplay');
+    const elMob = document.getElementById('monthGoalDisplayMobile');
+    if (!el && !elMob) return;
+
+    if (typeof updateGoalDisplay === 'function') updateGoalDisplay();
+  }, 1000);
+}
 
     function showGoalModal() {
       const now = new Date();
@@ -3737,9 +4176,13 @@ await db.collection('goals').doc(monthYear).set({
                 <button onclick="showLoginForm()" id="loginTab" class="flex-1 py-3 text-center font-semibold border-b-2" style="border-color: #a8d5e2; color: #6b9eb0;">
                   Login
                 </button>
-                <button onclick="showRegisterForm()" id="registerTab" class="flex-1 py-3 text-center font-semibold text-gray-700">
-                  Cadastro
-                </button>
+                <button 
+  id="registerTab" 
+  class="flex-1 py-3 text-center font-semibold text-gray-400 cursor-not-allowed" 
+  disabled
+  title="Cadastro temporariamente desativado">
+  Cadastro
+</button>
               </div>
             </div>
 
@@ -4237,6 +4680,14 @@ function rejectRidDeletionRequestPrompt(id) {
 }
 
  function renderAdminDashboard() {
+  const now = new Date();
+const year = now.getFullYear();
+const month = now.getMonth() + 1;
+
+const dashMonth = Number(document.getElementById('dashboardMonth')?.value) || (new Date().getMonth() + 1);
+const dashYear  = Number(document.getElementById('dashboardYear')?.value)  || (new Date().getFullYear());
+
+monthlyGoal = calcularMetaMensalAutomatica(allUsers, dashYear, dashMonth);
   console.debug && console.debug('renderDashboard called — currentPage=', window.currentPage, 'preventAutoRenderCount=', window.preventAutoRenderCount);
   // marca a página atual (usado por renderDeleteRequestsCard para ocultar botões)
   window.currentPage = 'dashboard';
@@ -4253,16 +4704,8 @@ function rejectRidDeletionRequestPrompt(id) {
   const employeesWithoutRids = getEmployeesWithoutRidsThisMonth(allUsers, filteredRids);
   const totalRids = filteredRids.length;
 
-  if (currentUserData?.isAdmin || currentUserData?.isDeveloper) {
-    updateGoalDisplay();
-  }
-
   const openRids = filteredRids.filter(r => r.status === 'EM ANDAMENTO').length;
   const overdueRids = filteredRids.filter(r => r.status === 'VENCIDO').length;
-
-  // 📅 Mês/ano “ativo” no dashboard (se não tiver filtro ainda, usa mês atual)
-  const dashMonth = Number(document.getElementById('dashboardMonth')?.value) || (new Date().getMonth() + 1);
-  const dashYear  = Number(document.getElementById('dashboardYear')?.value)  || (new Date().getFullYear());
 
   const toDateSafe = (v) => {
     if (!v) return null;
@@ -4354,7 +4797,6 @@ function rejectRidDeletionRequestPrompt(id) {
   const encerradosEremovidosTotal = encerradosRids + removidosRids;
 
   // semana útil
-  const now = new Date();
   const day = now.getDay();
   const diffToMonday = (day === 0 ? 6 : day - 1);
   const weekStart = new Date(now);
@@ -4408,10 +4850,11 @@ function rejectRidDeletionRequestPrompt(id) {
 
           <!-- Botão de Filtros -->
           <button
-            onclick="toggleDevFilters()"
-            class="flex items-center space-x-2 px-6 py-3 rounded-lg font-semibold text-white hover:opacity-90"
-            style="background-color:#c4a8e0;"
-          >
+  id="dashboardFiltersBtn"
+  onclick="toggleDevFilters()"
+  class="flex items-center space-x-2 px-6 py-3 rounded-lg font-semibold text-white hover:opacity-90"
+  style="background-color:#c4a8e0;"
+>
             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
               <path fill-rule="evenodd" d="M3 3h14l-5 6v6l-4-2v-4L3 3z"/>
             </svg>
@@ -4419,66 +4862,85 @@ function rejectRidDeletionRequestPrompt(id) {
           </button>
         </div>
 
-        <!-- Painel de Filtros (Oculto por padrão) -->
-        <div id="devFilterPanel" class="hidden mb-8 bg-white rounded-xl shadow-lg p-6 border-2">
-          <!-- (mantive o mesmo conteúdo de filtros que você já tinha) -->
-          <div class="flex items-center justify-between mb-4">
-            <h3 class="text-lg font-bold" style="color: #808080;">Filtrar RIDs por Período</h3>
-            <button onclick="toggleDevFilters()" class="text-gray-400 hover:text-gray-600">
-              <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
-                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
-              </svg>
-            </button>
-          </div>
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-            <!-- Mês / Ano / Setor / Botões (mesmo markup) -->
-            <div>
-              <label class="block text-sm font-semibold mb-1 text-gray-600">Mês</label>
-              <select id="dashboardMonth" class="w-full h-11 px-4 border rounded-lg bg-white" style="border-color:#9c9494;">
-                <option value="">Mês atual</option>
-                <option value="all">Todos os meses</option>
-                <option value="1">Janeiro</option>
-                <option value="2">Fevereiro</option>
-                <option value="3">Março</option>
-                <option value="4">Abril</option>
-                <option value="5">Maio</option>
-                <option value="6">Junho</option>
-                <option value="7">Julho</option>
-                <option value="8">Agosto</option>
-                <option value="9">Setembro</option>
-                <option value="10">Outubro</option>
-                <option value="11">Novembro</option>
-                <option value="12">Dezembro</option>
-              </select>
-            </div>
+        <!-- Painel de Filtros (Flutuante - não empurra os cards) -->
+<div
+  id="devFilterPanel"
+  class="hidden fixed z-50 top-40 right-8 w-[520px] max-w-[92vw] bg-white rounded-2xl shadow-xl p-4 border border-gray-200"
+  style="border-color:#9c9494;"
+>
+  <div class="flex items-center justify-between mb-3">
+    <h3 class="text-sm font-extrabold" style="color:#808080;">Filtrar RIDs por Período</h3>
 
-            <div>
-              <label class="block text-sm font-semibold mb-1 text-gray-600">Ano</label>
-              <input type="number" id="dashboardYear" placeholder="Ex: 2026" min="2020" max="2100"
-                     class="w-full h-11 px-4 border rounded-lg" style="border-color:#9c9494;">
-            </div>
+    <button onclick="toggleDevFilters()" class="w-9 h-9 rounded-xl hover:bg-gray-100 flex items-center justify-center text-gray-600">
+      <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
+      </svg>
+    </button>
+  </div>
 
-            <div>
-              <label class="block text-sm font-semibold mb-1 text-gray-600">Setor</label>
-              <select id="dashboardSector" class="w-full h-11 px-4 border rounded-lg bg-white" style="border-color:#9c9494;">
-                <option value="">Todos os setores</option>
-                <option value="ADM">ADM</option>
-                <option value="M. MOVEL">M. MOVEL</option>
-                <option value="M. FIXA">M. FIXA</option>
-                <option value="M. ELÉTRICA">M. ELÉTRICA</option>
-                <option value="PRODUÇÃO">PRODUÇÃO</option>
-                <option value="MINA">MINA</option>
-              </select>
-            </div>
+  <div class="space-y-3">
+    <!-- Mês -->
+    <div class="flex items-center gap-3">
+      <label class="w-14 text-sm font-bold text-gray-600">Mês</label>
+      <select id="dashboardMonth" class="flex-1 h-10 px-3 border rounded-xl bg-white text-sm" style="border-color:#9c9494;">
+        <option value="">Mês atual</option>
+        <option value="all">Todos os meses</option>
+        <option value="1">Janeiro</option>
+        <option value="2">Fevereiro</option>
+        <option value="3">Março</option>
+        <option value="4">Abril</option>
+        <option value="5">Maio</option>
+        <option value="6">Junho</option>
+        <option value="7">Julho</option>
+        <option value="8">Agosto</option>
+        <option value="9">Setembro</option>
+        <option value="10">Outubro</option>
+        <option value="11">Novembro</option>
+        <option value="12">Dezembro</option>
+      </select>
+    </div>
 
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full">
-              <button onclick="filterDashboard()" class="bg-blue-300 text-white px-6 py-2 rounded-lg font-semibold">Aplicar</button>
-              <button onclick="clearDashboardFilters()" class="h-11 px-6 rounded-lg font-semibold border text-gray-600">Limpar</button>
-            </div>
-          </div>
-        </div>
+    <!-- Ano -->
+    <div class="flex items-center gap-3">
+      <label class="w-14 text-sm font-bold text-gray-600">Ano</label>
+      <input
+        type="number"
+        id="dashboardYear"
+        placeholder="Ex: 2026"
+        min="2020"
+        max="2100"
+        class="flex-1 h-10 px-3 border rounded-xl text-sm"
+        style="border-color:#9c9494;"
+      >
+    </div>
 
-        <!-- ===== LAYOUT REORDENADO (APENAS POSIÇÃO DOS BLOCOS EXISTENTES) ===== -->
+    <!-- Setor -->
+    <div class="flex items-center gap-3">
+      <label class="w-14 text-sm font-bold text-gray-600">Setor</label>
+      <select id="dashboardSector" class="flex-1 h-10 px-3 border rounded-xl bg-white text-sm" style="border-color:#9c9494;">
+        <option value="">Todos os setores</option>
+        <option value="ADM">ADM</option>
+        <option value="M. MOVEL">M. MOVEL</option>
+        <option value="M. FIXA">M. FIXA</option>
+        <option value="M. ELÉTRICA">M. ELÉTRICA</option>
+        <option value="PRODUÇÃO">PRODUÇÃO</option>
+        <option value="MINA">MINA</option>
+      </select>
+    </div>
+
+    <!-- Botões -->
+    <div class="flex items-center justify-end gap-2 pt-2">
+      <button onclick="filterDashboard()" class="h-10 bg-blue-300 text-white px-5 rounded-xl text-sm font-extrabold">
+        Aplicar
+      </button>
+      <button onclick="clearDashboardFilters()" class="h-10 px-5 rounded-xl text-sm font-extrabold border text-gray-600 hover:bg-gray-50" style="border-color:#9c9494;">
+        Limpar
+      </button>
+    </div>
+  </div>
+</div>
+
+        <!-- ===== LAYOUT REORDENADO ===== -->
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
 
           <!-- Coluna esquerda (maior) — mantém listas operacionais e RIDs semanais aqui -->
@@ -4756,6 +5218,22 @@ function rejectRidDeletionRequestPrompt(id) {
     </div>
   </div>
 `;
+// ✅ garante que a meta fica visível (DOM já existe aqui)
+startGoalDisplayWatcher();
+
+// se você usa meta automática:
+setTimeout(() => {
+  try {
+    // recalcula com base no mês/ano ativo do dashboard (se tiver filtro)
+    const dashMonthFix = Number(document.getElementById('dashboardMonth')?.value) || (new Date().getMonth() + 1);
+    const dashYearFix  = Number(document.getElementById('dashboardYear')?.value)  || (new Date().getFullYear());
+
+    monthlyGoal = calcularMetaMensalAutomatica(allUsers, dashYearFix, dashMonthFix);
+    updateGoalDisplay();
+  } catch (e) {
+    console.warn('Falha ao atualizar meta:', e);
+  }
+}, 50);
 // rebuild charts async
   setTimeout(() => {
     try { renderDashboardStatusChart(openRids, overdueRids, correctedRids); } catch(e) {}
@@ -4809,6 +5287,19 @@ function rejectRidDeletionRequestPrompt(id) {
     }, 220));
   })();
 }
+
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('devFilterPanel');
+  if (!panel || panel.classList.contains('hidden')) return;
+
+  // se você tiver um botão "Filtros", coloque um id nele: id="dashboardFiltersBtn"
+  const btn = document.getElementById('dashboardFiltersBtn');
+
+  const clickedInside = panel.contains(e.target);
+  const clickedBtn = btn ? btn.contains(e.target) : false;
+
+  if (!clickedInside && !clickedBtn) toggleDevFilters(false);
+});
 
     // ✅ Plugin: risquinho + % fora do doughnut
 const doughnutPercentCallouts = {
@@ -4946,6 +5437,25 @@ const doughnutPercentCallouts = {
   });
 }
 
+function normalizeStatus(st) {
+  return String(st || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function getDisplayStatus(rid) {
+  const st = normalizeStatus(rid?.status);
+
+  // prioridade: removido/excluído
+  if (rid?.deleted === true || st === 'EXCLUIDO' || st === 'REMOVIDO') return 'REMOVIDO';
+
+  // vencido/atrasado
+  if (st === 'VENCIDO' || st === 'ATRASADO') return 'VENCIDO';
+
+  // padrão
+  return rid?.status || 'PENDENTE';
+}
 
 function renderMyRidsPage() {
   if (!isAdmin() && !isDeveloper()) {
@@ -4955,9 +5465,32 @@ function renderMyRidsPage() {
 
   window.currentPage = 'myrids';
 
-  const myRids = allRids
+const myRids = allRids
   .filter(r => r.emitterId === currentUser.uid)
-  .sort((a, b) => b.createdAt?.toDate() - a.createdAt?.toDate());
+  .sort((a, b) => {
+    const ta = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
+    const tb = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
+    return tb - ta;
+  });
+
+const myMaintenances = (allMaintenances || [])
+  .filter(m => !m.deleted && m.requesterId === currentUser.uid)
+  .sort((a, b) => {
+    const ta = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
+    const tb = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
+    return tb - ta;
+  });
+
+const combinedList = [
+  ...myRids.map(r => ({ ...r, type: 'RID' })),
+  ...myMaintenances.map(m => ({ ...m, type: 'MAN' }))
+].sort((a, b) => {
+  const ta = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
+  const tb = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
+  return tb - ta;
+});
+
+const hasItems = combinedList.length > 0;
 
   const config = window.elementSdk ? window.elementSdk.config : defaultConfig;
   const app = document.getElementById('app');
@@ -4976,166 +5509,212 @@ const myPerfHTML = renderMyPerformancePanelHTML(myStats);
 ${myPerfHTML}
 
           <h1 class="text-3xl font-bold text-gray-800 mb-6">
-            Meus RIDs
+            Meus RIDs e Manutenções
           </h1>
 
 
-          ${
-            myRids.length === 0
-              ? `<p class="text-gray-500 text-center py-12">
-                   Você ainda não emitiu nenhum RID.
-                 </p>`
-              : `
-                <div class="space-y-4">
-                  ${myRids.map(rid => `
-                    <div class="bg-white rounded-xl shadow-md p-5">
+         ${combinedList.length === 0
+  ? `<p class="text-gray-500 text-center py-12">
+       Você ainda não abriu nenhum RID ou solicitação de manutenção.
+     </p>`
+  : `
+   <div class="space-y-4">
+  ${combinedList.map(item => {
+    const isRid = item.type === 'RID';
+    const displayStatus = isRid
+      ? getDisplayStatus(item)
+      : String(item.status || '').toUpperCase();
 
-  ${
-    rid.deleted
-      ? `
-        <div class="font-bold text-gray-700 mb-3">
-          RID #${rid.ridNumber}
-        </div>
+    const maintenanceStatusText =
+      displayStatus === 'CONCLUIDA' || displayStatus === 'CONCLUÍDA'
+        ? 'CONCLUÍDA'
+        : (displayStatus === 'EM_ANDAMENTO' || displayStatus === 'EM ANDAMENTO'
+            ? 'EM ANDAMENTO'
+            : 'ABERTA');
 
-        <div class="bg-gray-100 border border-gray-300 rounded-lg p-4 text-sm text-gray-600">
-          RIDs removidos do fluxo operacional não são exibidos nesta lista.<br>
-          Em caso de dúvida, procure seu gestor.
-        </div>
-      `
-      : `
+    const maintenanceStatusColor =
+      maintenanceStatusText === 'CONCLUÍDA'
+        ? 'bg-green-100 text-green-700'
+        : maintenanceStatusText === 'EM ANDAMENTO'
+          ? 'bg-yellow-100 text-yellow-700'
+          : 'bg-red-100 text-red-700';
+
+    return `
+      <div class="bg-white rounded-xl shadow-md p-5 ${isRid && getDisplayStatus(item) === 'REMOVIDO' ? 'opacity-80' : ''}">
+
         <div class="flex items-center justify-between mb-2">
           <div class="font-bold text-gray-800">
-            RID #${rid.ridNumber} | ${rid.emitterName}
+            ${
+              isRid
+                ? `RID #${item.ridNumber} | ${item.emitterName || '-'}`
+                : `MAN #${(item.maintenanceNumber || '').replace('MAN-', '')}`
+            }
           </div>
 
-          <span class="px-3 py-1 rounded-lg text-xs font-bold ${getStatusColor(rid.status)}">
-            ${rid.status}
+          <span class="px-3 py-1 rounded-lg text-xs font-bold ${
+            isRid ? getStatusColor(displayStatus) : maintenanceStatusColor
+          }">
+            ${isRid ? displayStatus : maintenanceStatusText}
           </span>
         </div>
 
         <p class="text-sm text-gray-700">
-          ${rid.description}
+          ${item.description || ''}
         </p>
-      `
-  }
 
- ${
-  rid.status === 'CORRIGIDO' &&
-  rid.emitterId === currentUser.uid &&
-  (!rid.correctiveActions || rid.correctiveActions.trim() === '') &&
-  rid.immediateAction &&
-  rid.immediateAction.trim() !== ''
-    ? `
-      <div class="mt-3 p-3 rounded-lg bg-yellow-50 border border-yellow-300">
-        <p class="text-sm font-bold text-yellow-800 mb-1">
-          Ação imediata (emissor)
-        </p>
-        <p class="text-sm text-yellow-800">
-          ${rid.immediateAction}
-        </p>
-      </div>
-    `
-    : ''
-}
-
-                      ${
-  rid.status === 'CORRIGIDO'
-    ? `
-      <div class="mt-3 p-3 rounded-lg bg-green-50 border border-green-200">
-        <p class="text-sm font-bold text-green-700 mb-1">
-          Ação corretiva
-        </p>
-        <p class="text-sm text-green-700">
-          ${
-            rid.correctiveActions && rid.correctiveActions.trim() !== ''
-              ? rid.correctiveActions
-              : (
-                  rid.emitterId === currentUser.uid
-                    ? 'Correção realizada pelo próprio emissor no momento da abertura do RID.'
-                    : 'Aguardando detalhamento da ação corretiva.'
-                )
-          }
-        </p>
-      </div>
-    `
-    : ''
-}
-
-${rid.status === 'ENCERRADO'
-  ? `
-    <div class="mt-3 p-3 rounded-lg bg-gray-100 border border-gray-400">
-      <p class="text-sm font-bold text-gray-700 mb-1">
-        RID encerrado pela gestão
-      </p>
-
-      <p class="text-sm text-gray-600 mb-1">
-        Motivo do encerramento:
-      </p>
-
-      <p class="text-sm text-gray-800 whitespace-pre-line">
         ${
-          rid.correctiveActions && rid.correctiveActions.trim() !== ''
-            ? rid.correctiveActions
-            : 'Motivo não informado'
+          isRid && item.deleted
+            ? `
+              <div class="mt-3 p-3 rounded-lg bg-gray-100 border border-gray-300">
+                <p class="text-sm font-bold text-gray-700 mb-1">
+                  RID removido do fluxo operacional
+                </p>
+
+                <p class="text-sm text-gray-600">
+                  Este RID foi removido do fluxo operacional pela gestão e não está mais ativo.<br>
+                  Em caso de dúvida, procure seu gestor.
+                </p>
+              </div>
+            `
+            : ''
         }
-      </p>
-    </div>
-  `
-  : ''
-}
 
-${
-  String(rid.status || '').toUpperCase().replace(/[_\s]+/g,' ').includes('ANDAMENTO') &&
-  (
-    (rid.observations && rid.observations.trim() !== '') ||
-    (rid.observacoes && rid.observacoes.trim() !== '')
-  )
-    ? (function() {
+        ${
+          isRid &&
+          item.status === 'CORRIGIDO' &&
+          item.emitterId === currentUser.uid &&
+          (!item.correctiveActions || item.correctiveActions.trim() === '') &&
+          item.immediateAction &&
+          item.immediateAction.trim() !== ''
+            ? `
+              <div class="mt-3 p-3 rounded-lg bg-yellow-50 border border-yellow-300">
+                <p class="text-sm font-bold text-yellow-800 mb-1">
+                  Ação imediata (emissor)
+                </p>
+                <p class="text-sm text-yellow-800">
+                  ${item.immediateAction}
+                </p>
+              </div>
+            `
+            : ''
+        }
 
-        const parseMaybeDate = (d) => {
-          try {
-            if (!d) return null;
-            if (d?.toDate) d = d.toDate(); // Timestamp Firestore
-            const dt = new Date(d);
-            if (isNaN(dt)) return null;
-            return dt;
-          } catch { return null; }
-        };
+        ${
+          isRid && item.status === 'CORRIGIDO'
+            ? `
+              <div class="mt-3 p-3 rounded-lg bg-green-50 border border-green-200">
+                <p class="text-sm font-bold text-green-700 mb-1">
+                  Ação corretiva
+                </p>
+                <p class="text-sm text-green-700">
+                  ${
+                    item.correctiveActions && item.correctiveActions.trim() !== ''
+                      ? item.correctiveActions
+                      : (
+                          item.emitterId === currentUser.uid
+                            ? 'Correção realizada pelo próprio emissor no momento da abertura do RID.'
+                            : 'Aguardando detalhamento da ação corretiva.'
+                        )
+                  }
+                </p>
+              </div>
+            `
+            : ''
+        }
 
-        const addOneDay = (dateObj) => {
-          if (!dateObj) return null;
-          const dt = new Date(dateObj.getTime());
-          dt.setDate(dt.getDate() + 1);
-          return dt.toLocaleDateString('pt-BR');
-        };
+        ${
+          isRid && item.status === 'ENCERRADO'
+            ? `
+              <div class="mt-3 p-3 rounded-lg bg-gray-100 border border-gray-400">
+                <p class="text-sm font-bold text-gray-700 mb-1">
+                  RID encerrado pela gestão
+                </p>
 
-        const obs = rid.observations || rid.observacoes || '';
-        const rawDeadline = rid.deadline || rid.dueDate || rid.prazo || null;
-        const prazo = addOneDay(parseMaybeDate(rawDeadline));
+                <p class="text-sm text-gray-600 mb-1">
+                  Motivo do encerramento:
+                </p>
 
-        return `
-        <div class="mt-3 p-3 rounded-lg bg-yellow-50 border border-yellow-300">
-          <p class="text-sm font-bold text-yellow-800 mb-1">
-            Observações do responsável
-          </p>
+                <p class="text-sm text-gray-800 whitespace-pre-line">
+                  ${
+                    item.correctiveActions && item.correctiveActions.trim() !== ''
+                      ? item.correctiveActions
+                      : 'Motivo não informado'
+                  }
+                </p>
+              </div>
+            `
+            : ''
+        }
 
-          <p class="text-sm text-yellow-900 whitespace-pre-line">
-            ${obs}
-            ${prazo ? `\n\nPrazo definido: ${prazo}` : ''}
-          </p>
-        </div>
-        `;
+        ${
+          isRid &&
+          String(item.status || '').toUpperCase().replace(/[_\s]+/g, ' ').includes('ANDAMENTO') &&
+          (
+            (item.observations && item.observations.trim() !== '') ||
+            (item.observacoes && item.observacoes.trim() !== '')
+          )
+            ? (() => {
+                const parseMaybeDate = (d) => {
+                  try {
+                    if (!d) return null;
+                    if (d?.toDate) d = d.toDate();
+                    const dt = new Date(d);
+                    if (isNaN(dt)) return null;
+                    return dt;
+                  } catch {
+                    return null;
+                  }
+                };
 
-      })()
-    : ''
-}
+                const addOneDay = (dateObj) => {
+                  if (!dateObj) return null;
+                  const dt = new Date(dateObj.getTime());
+                  dt.setDate(dt.getDate() + 1);
+                  return dt.toLocaleDateString('pt-BR');
+                };
 
+                const obs = item.observations || item.observacoes || '';
+                const rawDeadline = item.deadline || item.dueDate || item.prazo || null;
+                const prazo = addOneDay(parseMaybeDate(rawDeadline));
 
+                return `
+                  <div class="mt-3 p-3 rounded-lg bg-yellow-50 border border-yellow-300">
+                    <p class="text-sm font-bold text-yellow-800 mb-1">
+                      Observações do responsável
+                    </p>
 
+                    <p class="text-sm text-yellow-900 whitespace-pre-line">
+                      ${obs}
+                      ${prazo ? `\n\nPrazo definido: ${prazo}` : ''}
+                    </p>
+                  </div>
+                `;
+              })()
+            : ''
+        }
 
-                    </div>
-                  `).join('')}
-                </div>
+        ${
+          !isRid &&
+          maintenanceStatusText === 'CONCLUÍDA' &&
+          item.resolution &&
+          item.resolution.trim() !== ''
+            ? `
+              <div class="mt-3 p-3 rounded-lg bg-green-50 border border-green-200">
+                <p class="text-sm font-bold text-green-700 mb-1">
+                  Resolução
+                </p>
+                <p class="text-sm text-green-700 whitespace-pre-line">
+                  ${item.resolution}
+                </p>
+              </div>
+            `
+            : ''
+        }
+
+      </div>
+    `;
+  }).join('')}
+</div>
               `
           }
 
@@ -5149,6 +5728,18 @@ ${
 // ---------- INÍCIO: cole esta função globalmente (uma vez) ----------
 function startRidsListener(userUid) {
   if (!userUid) return;
+  // ✅ guarda quais dados esse listener usou (pra saber se precisa reiniciar quando CPF carregar)
+const currentCpf = window.currentUserData?.cpf ? String(window.currentUserData.cpf).trim() : '';
+const signature = `${userUid}::${currentCpf || 'NOCPF'}`;
+
+// se já existe listener com a mesma assinatura, não faz nada
+if (window._ridsListenerSignature === signature && window.unsubscribeRidsListener) {
+  window.allRidsStarted = true;
+  return;
+}
+
+// se mudou (ex: agora CPF apareceu), reinicia listener
+window._ridsListenerSignature = signature;
 
   // evita múltiplos listeners
   if (window.unsubscribeRidsListener) {
@@ -5195,6 +5786,14 @@ function startRidsListener(userUid) {
         mapByRidNumber.set(key, payload);
       } else {
         if (!mapById.has(id)) mapById.set(id, payload);
+        // ✅ marca como pronto no PRIMEIRO publish (1º snapshot recebido)
+if (!window.allRidsReady) {
+  window.allRidsReady = true;
+  if (typeof window._resolveAllRidsReady === 'function') {
+    window._resolveAllRidsReady(true);
+    window._resolveAllRidsReady = null;
+  }
+}
       }
     });
 
@@ -5208,6 +5807,7 @@ function startRidsListener(userUid) {
 
     // publica globalmente
     window.allRids = combined;
+allRids = combined; // ✅ mantém compatível com renderEmployeeDashboard()
     if (typeof renderRidsListUI === 'function') renderRidsListUI(combined);
     // se você só usa renderSearchPage -> re-renderiza para atualizar contadores
     if (window.currentPage === 'search') renderSearchPage();
@@ -5242,22 +5842,44 @@ function startRidsListener(userUid) {
       const currentMonth = now.getMonth() + 1;
       const currentYear = now.getFullYear();
       
-      // ---------- INÍCIO: garantir que o listener de RIDs esteja ativo ----------
-if (!window.allRidsStarted) {
-  // tenta pegar uid do usuário logado (ajuste se sua app usa outro nome)
-  const uid = (window.currentUser && window.currentUser.uid) || (firebase && firebase.auth && firebase.auth().currentUser && firebase.auth().currentUser.uid);
-  if (uid) {
-    startRidsListener(uid);
-  } else {
-    // se não tiver uid ainda, aguarda auth e inicia quando disponível
-    if (firebase && firebase.auth) {
-      firebase.auth().onAuthStateChanged(u => {
-        if (u) startRidsListener(u.uid);
-      });
+// ---------- INÍCIO: garantir que o listener de RIDs esteja ativo (com "ready") ----------
+window.allRidsStarted = window.allRidsStarted || false;
+window.allRidsReady = window.allRidsReady || false;
+window.allRidsReadyPromise = window.allRidsReadyPromise || null;
+window._resolveAllRidsReady = window._resolveAllRidsReady || null;
+
+function ensureRidsListenerReady() {
+  // já carregou pelo menos 1x
+  if (window.allRidsReady) return Promise.resolve(true);
+
+  // já existe promise rodando
+  if (window.allRidsReadyPromise) return window.allRidsReadyPromise;
+
+  window.allRidsReadyPromise = new Promise((resolve) => {
+    window._resolveAllRidsReady = resolve;
+  });
+
+  const tryStart = (u) => {
+    if (!u?.uid) return;
+    if (!window.allRidsStarted) {
+      window.allRidsStarted = true;
+      startRidsListener(u.uid);
     }
+  };
+
+  // tenta agora
+  const uNow = firebase?.auth?.().currentUser || firebase?.auth?.currentUser;
+  if (uNow?.uid) {
+    tryStart(uNow);
+  } else if (firebase?.auth) {
+    firebase.auth().onAuthStateChanged((u) => {
+      if (u) tryStart(u);
+    });
   }
+
+  return window.allRidsReadyPromise;
 }
-// ---------- FIM: garantir que o listener de RIDs esteja ativo ----------
+// ---------- FIM: garantir que o listener de RIDs esteja ativo (com "ready") ----------
 
     // ✅ mês/ano selecionado (se vazio, cai no mês atual)
 const selectedMonth = Number(document.getElementById('searchMonth')?.value) || currentMonth;
@@ -5595,23 +6217,27 @@ function isAdminOrDev() {
 }
 
 
-   function getStatusColor(status) {
-  switch (status) {
-    case 'VENCIDO':
-      return 'bg-red-200 text-red-800';
+function getStatusColor(status) {
+  const st = String(status || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
 
-    case 'ENCERRADO':
-      return 'bg-gray-300 text-gray-800';
+  if (st === 'CORRIGIDO') return 'bg-green-100 text-green-800 border border-green-200';
 
-    case 'EM ANDAMENTO':
-      return 'bg-yellow-200 text-yellow-800';
+  // vencido / atrasado
+  if (st === 'VENCIDO' || st === 'ATRASADO') return 'bg-yellow-100 text-yellow-800 border border-yellow-200';
 
-    case 'CORRIGIDO':
-      return 'bg-green-200 text-green-800';
+  // removido / excluído
+  if (st === 'REMOVIDO' || st === 'EXCLUIDO' || st === 'EXCLUÍDO') return 'bg-gray-200 text-gray-800 border border-gray-300';
 
-    default:
-      return 'bg-gray-200 text-gray-800';
-  }
+  // encerrado
+  if (st === 'ENCERRADO') return 'bg-gray-100 text-gray-700 border border-gray-300';
+
+  // andamento / pendente
+  if (st.includes('ANDAMENTO')) return 'bg-blue-100 text-blue-800 border border-blue-200';
+
+  return 'bg-gray-100 text-gray-800 border border-gray-200';
 }
 
 
@@ -5847,12 +6473,25 @@ if (isAdmin() || isDeveloper()) {
                 </select>
               </div>
 
-              <div>
-                <label class="block text-sm font-bold mb-2 text-gray-700">13. Designar para um Líder</label>
-                <select id="responsibleLeaderSelect" name="responsibleLeader" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
-  <option value="">Carregando líderes...</option>
-</select>
-              </div>
+              <div class="relative">
+  <label class="block text-sm font-bold mb-2 text-gray-700">13. Designar para um Líder</label>
+
+  <div
+    id="leaderFloatingWarning"
+    class="hidden absolute -top-12 left-0 z-50 max-w-full rounded-lg border px-3 py-2 text-xs font-medium shadow-lg"
+    style="background:#fff7ed; color:#9a3412; border-color:#fdba74;"
+  >
+    Para emitir RID com status <b>VENCIDO</b>, é obrigatório designar um líder.
+  </div>
+
+  <select
+    id="responsibleLeaderSelect"
+    name="responsibleLeader"
+    class="w-full px-4 py-2 border border-gray-300 rounded-lg"
+  >
+    <option value="">Carregando líderes...</option>
+  </select>
+</div>
             </div>
 
             <div class="flex space-x-4">
@@ -5890,7 +6529,106 @@ select.innerHTML = `
 if (select.options.length === 1) {
   select.innerHTML = `<option value="">Nenhum líder disponível</option>`;
 }
+const statusSelect = modal.querySelector('select[name="status"]');
+const leaderWarning = document.getElementById('leaderFloatingWarning');
+
+if (statusSelect) {
+  statusSelect.addEventListener('change', () => {
+    if (statusSelect.value !== 'VENCIDO' && leaderWarning) {
+      leaderWarning.classList.add('hidden');
+      select.classList.remove('border-red-500', 'ring-2', 'ring-red-200');
+      select.classList.add('border-gray-300');
     }
+  });
+}
+
+if (select) {
+  select.addEventListener('change', () => {
+    if (select.value && leaderWarning) {
+      leaderWarning.classList.add('hidden');
+      select.classList.remove('border-red-500', 'ring-2', 'ring-red-200');
+      select.classList.add('border-gray-300');
+    }
+  });
+}
+    }
+
+    function openCreateMaintenanceModal() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-backdrop fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4';
+  modal.innerHTML = `
+    <div class="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-bold text-gray-800">Nova manutenção</h2>
+        <button onclick="this.closest('.modal-backdrop').remove()" class="text-gray-500 text-xl font-bold">×</button>
+      </div>
+
+      <form onsubmit="createMaintenance(event)" class="space-y-4">
+        <div>
+          <label class="block text-sm font-bold mb-2 text-gray-700">Manutenção *</label>
+          <input id="maintenanceEquipment" type="text" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required>
+        </div>
+
+        <div>
+          <label class="block text-sm font-bold mb-2 text-gray-700">Setor *</label>
+          <input id="maintenanceSector" type="text" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required>
+        </div>
+
+        <div>
+          <label class="block text-sm font-bold mb-2 text-gray-700">Local</label>
+          <input id="maintenanceLocation" type="text" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+        </div>
+
+        <div>
+          <label class="block text-sm font-bold mb-2 text-gray-700">Prioridade</label>
+          <select id="maintenancePriority" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+            <option value="BAIXA">Baixa</option>
+            <option value="MEDIA" selected>Média</option>
+            <option value="ALTA">Alta</option>
+            <option value="CRITICA">Crítica</option>
+          </select>
+        </div>
+
+        <div>
+  <label class="block text-sm font-bold mb-2 text-gray-700">
+    Designar para *
+  </label>
+
+  <select
+    id="maintenanceAssignedTo"
+    class="w-full px-4 py-2 border border-gray-300 rounded-lg"
+    required
+  >
+    <option value="">Selecione um líder...</option>
+    ${(allUsers || [])
+      .filter(u => u.isAdmin || u.isDeveloper)
+      .map(u => `
+        <option value="${u.id}">
+          ${u.name}
+        </option>
+      `).join('')}
+  </select>
+</div>
+
+        <div>
+          <label class="block text-sm font-bold mb-2 text-gray-700">Descrição *</label>
+          <textarea id="maintenanceDescription" rows="5" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required></textarea>
+        </div>
+
+        <div class="flex justify-end gap-3 pt-2">
+          <button type="button" onclick="this.closest('.modal-backdrop').remove()" class="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-semibold">
+            Cancelar
+          </button>
+          <button type="submit" class="px-4 py-2 rounded-lg text-white font-semibold" style="background-color:#6b9eb0;">
+            Enviar manutenção
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+}
 
 function showRidNotification(rid) {
   // 🔊 Apenas som (sem popup visual)
@@ -6312,55 +7050,59 @@ function cancelarEncerramento(button) {
       if (detailsModal) detailsModal.remove();
     }
 
-    async function handleEditRid(event, ridId) {
-      event.preventDefault();
-      const form = event.target;
-      const button = form.querySelector('button[type="submit"]');
-      
-      button.disabled = true;
-      button.textContent = 'Salvando...';
+   async function handleEditRid(event, ridId) {
+  event.preventDefault();
+  const form = event.target;
+  const button = form.querySelector('button[type="submit"]');
 
-      try {
-        const updates = {
-          emissionDate: firebase.firestore.Timestamp.fromDate(new Date(form.emissionDate.value)),
-          contractType: form.contractType.value,
-          unit: form.unit.value,
-          sector: form.sector.value,
-          location: form.location.value,
-          incidentType: form.incidentType.value,
-          detectionOrigin: form.detectionOrigin.value,
-          riskClassification: form.riskClassification.value,
-          status: form.status.value,
-          description: form.description.value,
-          immediateAction: form.immediateAction.value,
-          correctiveActions: form.correctiveActions.value,
-          conclusion: form.conclusion.value
-        };
+  button.disabled = true;
+  button.textContent = 'Salvando...';
 
-        // Admin-only fields
-        if (isAdmin()) {
-          const leaderId = form.responsibleLeader.value;
-          updates.responsibleLeader = leaderId || null;
-          updates.responsibleLeaderName = leaderId? getUserNameById(leaderId): null;
-          updates.deadline = form.deadline.value ? firebase.firestore.Timestamp.fromDate(new Date(form.deadline.value)) : null;
-          updates.observations = form.observations.value;
-        }
+  try {
+    const updates = {
+      emissionDate: firebase.firestore.Timestamp.fromDate(new Date(form.emissionDate.value)),
+      contractType: form.contractType.value,
+      unit: form.unit.value,
+      sector: form.sector.value,
+      location: form.location.value,
+      incidentType: form.incidentType.value,
+      detectionOrigin: form.detectionOrigin.value,
+      riskClassification: form.riskClassification.value,
+      status: form.status.value,
+      description: form.description.value,
+      immediateAction: form.immediateAction.value,
+      correctiveActions: form.correctiveActions.value,
+      conclusion: form.conclusion.value
+    };
 
-        const success = await updateRid(ridId, updates);
-        
-        if (success) {
-          form.closest('.modal-backdrop').remove();
-          renderDashboard();
-        } else {
-          button.disabled = false;
-          button.textContent = 'Salvar Alterações';
-        }
-      } catch (error) {
-        showToast('Erro ao salvar alterações: ' + error.message, 'error');
-        button.disabled = false;
-        button.textContent = 'Salvar Alterações';
-      }
+    // Admin-only fields
+    if (isAdmin()) {
+      const leaderId = form.responsibleLeader.value;
+      updates.responsibleLeader = leaderId || null;
+      updates.responsibleLeaderName = leaderId ? getUserNameById(leaderId) : null;
+      updates.deadline = form.deadline.value
+        ? firebase.firestore.Timestamp.fromDate(new Date(form.deadline.value))
+        : null;
+      updates.observations = form.observations.value;
     }
+
+    const modal = form.closest('.modal-backdrop');
+
+    const success = await updateRid(ridId, updates);
+
+    if (success) {
+      modal?.remove();
+      return;
+    } else {
+      button.disabled = false;
+      button.textContent = 'Salvar Alterações';
+    }
+  } catch (error) {
+    showToast('Erro ao salvar alterações: ' + error.message, 'error');
+    button.disabled = false;
+    button.textContent = 'Salvar Alterações';
+  }
+}
 
     async function syncLeadersPublic() {
   if (!isAdmin() && !isDeveloper()) return;
@@ -6390,12 +7132,29 @@ function cancelarEncerramento(button) {
 
     function renderEmployeesPage() {
 
+      console.log('renderEmployeesPage -> allUsers atual:', allUsers);
+console.log('renderEmployeesPage -> total atual:', allUsers.length);
+
   // 🔁 garante leaders_public atualizado
   syncLeadersPublic();
 
   const config = window.elementSdk ? window.elementSdk.config : defaultConfig;
 
       const app = document.getElementById('app');
+      const rawSectorFilter = (window.employeesSectorFilter || '').toString().trim().toUpperCase();
+const selectedSector = (rawSectorFilter === 'TODOS') ? '' : rawSectorFilter;
+window.employeesSectorFilter = selectedSector;
+
+let employeesBase = (allUsers || []).filter(u => u && typeof u.name === 'string');
+
+if (selectedSector) {
+  employeesBase = employeesBase.filter(u =>
+    String(u?.sector || '').trim().toUpperCase() === selectedSector
+  );
+}
+
+const totalUsers = employeesBase.length;
+const sectorOptions = buildEmployeesSectorOptions(selectedSector);
       app.innerHTML = `
         <div class="h-full flex flex-col">
           ${renderHeader(config)}
@@ -6403,11 +7162,34 @@ function cancelarEncerramento(button) {
           
           <div class="flex-1 overflow-auto p-8" style="background-color: #dfdfdf;">
             <div class="w-full px-6 2xl:px-16">
-              <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+         <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
 
-  <h1 class="text-2xl md:text-3xl font-bold text-gray-800 leading-tight">
-    Gerenciamento de Funcionários
-  </h1>
+  <div>
+    <h1 class="text-2xl md:text-3xl font-bold text-gray-800 leading-tight">
+      Gerenciamento de Funcionários
+    </h1>
+
+    <div class="mt-2 flex flex-wrap gap-3 items-center">
+
+  <span class="px-3 py-1 rounded-full text-sm font-bold bg-white border border-gray-200 text-gray-700">
+    Total cadastrados: ${totalUsers}
+  </span>
+
+  <div class="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-3 py-1">
+    <span class="text-sm font-bold text-gray-700">Setor:</span>
+    <select
+      id="employeesSectorFilter"
+      onchange="setEmployeesSectorFilter(this.value)"
+      class="text-sm font-bold text-gray-800 bg-transparent outline-none"
+      title="Filtrar por setor"
+    >
+      <option value="" ${!selectedSector ? 'selected' : ''}>TODOS</option>
+      ${sectorOptions}
+    </select>
+  </div>
+
+</div>
+  </div>
 
   ${isAdmin() ? `
     <button 
@@ -6428,54 +7210,105 @@ function cancelarEncerramento(button) {
 
 
               <div class="space-y-3">
-                ${allUsers
-  .filter(user => user && typeof user.name === 'string')
+                ${employeesBase
   .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
   .map(user => `
 
-                  <div class="bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow p-4">
-  <div class="flex items-center gap-4">
+                 <div class="bg-white rounded-xl shadow-sm border border-gray-200 px-6 py-4 hover:shadow-md transition-shadow overflow-x-auto">
+  <div class="flex items-center justify-between gap-4 min-w-[1100px]">
 
-    <!-- Nome sempre visível -->
-    <div class="flex-1 min-w-0">
-      <span class="font-semibold text-gray-800 text-base">
-        ${user.name}
-      </span>
+    <!-- Nome -->
+    <div class="w-52 flex-shrink-0 font-bold text-gray-900 truncate">
+      ${escapeHtml(user.name || '')}
     </div>
 
-    <!-- CPF (somente desktop) -->
-    <div class="w-36 flex-shrink-0 hidden md:block">
-      <span class="text-sm text-gray-600">${user.cpf}</span>
+    <!-- CPF -->
+    <div class="w-40 flex-shrink-0 text-sm text-gray-700 truncate">
+      ${escapeHtml(user.cpf || '—')}
     </div>
 
-    <!-- Setor (somente desktop) -->
-    <div class="w-32 flex-shrink-0 hidden md:block">
-      <span class="text-sm text-gray-600">${user.sector}</span>
+    <!-- Email -->
+    <div class="w-60 flex-shrink-0 text-sm text-gray-700 truncate">
+      ${escapeHtml(user.email || '—')}
     </div>
 
-    <!-- Tipo (somente desktop) -->
-    <div class="w-32 flex-shrink-0 hidden md:block">
-      <span class="px-3 py-1 rounded-lg text-xs font-bold ${
+    <!-- Setor -->
+    <div class="w-32 flex-shrink-0 text-sm text-gray-700 truncate">
+      ${escapeHtml(user.sector || '—')}
+    </div>
+
+    <!-- Unidade -->
+    <div class="w-32 flex-shrink-0 text-sm text-gray-700 truncate">
+      ${escapeHtml(user.unit || '—')}
+    </div>
+
+    <!-- Função -->
+    <div class="w-40 flex-shrink-0 text-sm text-gray-700 truncate">
+      ${escapeHtml(user.role || '—')}
+    </div>
+
+    <!-- Tipo -->
+    <div class="w-36 flex-shrink-0 text-center">
+      <span class="px-3 py-1 rounded-full text-xs font-bold ${
         user.isDeveloper ? 'bg-purple-200 text-purple-900' :
-        user.isAdmin ? 'bg-purple-100 text-purple-800' : 
+        user.isAdmin ? 'bg-indigo-200 text-indigo-900' :
         'bg-gray-100 text-gray-700'
       }">
-        ${user.userType || (user.isAdmin ? 'Administrador' : 'Funcionário')}
+        ${user.isDeveloper ? 'Desenvolvedor' : (user.isAdmin ? 'Administrador' : 'Funcionário')}
       </span>
     </div>
 
     <!-- Ações (somente desktop) -->
-    <div class="w-40 flex-shrink-0 text-right hidden md:block">
-      ${isDeveloper() && !user.isDeveloper && user.id !== currentUser.uid ? `
-        <button onclick="deleteEmployeeDirectly('${user.id}', '${user.name}')" class="px-4 py-2 bg-red-100 text-red-700 rounded-lg font-semibold hover:bg-red-200 transition-colors text-sm whitespace-nowrap">
+<div class="min-w-[240px] flex-shrink-0 hidden md:flex items-center justify-end gap-2 whitespace-nowrap">
+  <!-- Botão amarelo Editar -->
+  <button
+    onclick="showEditEmployeeModal('${user.id}')"
+    class="py-1 px-3 rounded-md bg-yellow-200 hover:bg-yellow-300 text-black hover:opacity-90 transition-opacity"
+  >
+    Editar
+  </button>
+
+  <!-- Botão vermelho: DEV exclui direto | ADMIN solicita exclusão -->
+  ${isDeveloper() ? (
+      (!user.isDeveloper && user.id !== currentUser.uid) ? `
+        <button
+          onclick="deleteEmployeeDirectly('${user.id}', '${escapeHtml(user.name)}')"
+          class="px-4 py-2 bg-red-500 text-white rounded-lg font-semibold hover:bg-red-600 transition-colors text-sm whitespace-nowrap"
+        >
           Excluir
         </button>
-      ` : isAdmin() && !user.isAdmin ? `
-        <button onclick="showDeleteEmployeeModal('${user.id}', '${user.name}')" class="px-4 py-2 bg-red-100 text-red-700 rounded-lg font-semibold hover:bg-red-200 transition-colors text-sm whitespace-nowrap">
-          Solicitar Exclusão
+      ` : `
+        <button
+          class="px-4 py-2 bg-gray-200 text-gray-500 rounded-lg font-semibold text-sm whitespace-nowrap cursor-not-allowed"
+          title="Você não pode excluir este usuário"
+          disabled
+        >
+          Excluir
         </button>
-      ` : ''}
-    </div>
+      `
+    ) : (
+      isAdmin() ? (
+        !user.isAdmin ? `
+          <button
+            onclick="showDeleteEmployeeModal('${user.id}', '${escapeHtml(user.name)}')"
+            class="px-3 py-2 bg-red-100 text-red-700 rounded-lg font-semibold hover:bg-red-200 transition-colors text-sm whitespace-nowrap"
+            title="Solicitar exclusão"
+          >
+            Solicitar Remoção
+          </button>
+        ` : `
+          <button
+            class="px-3 py-2 bg-gray-200 text-gray-500 rounded-lg font-semibold text-sm whitespace-nowrap cursor-not-allowed"
+            title="Você não pode solicitar exclusão de outro administrador"
+            disabled
+          >
+            Solicitação Bloqueada
+          </button>
+        `
+      ) : ''
+    )
+  }
+</div>
 
   </div>
 </div>
@@ -6488,30 +7321,56 @@ function cancelarEncerramento(button) {
       `;
     }
 
+
+    // ==============================
+// FILTRO POR SETOR (FUNCIONÁRIOS)
+// ==============================
+function setEmployeesSectorFilter(value) {
+  const normalized = String(value || '').trim().toUpperCase();
+  window.employeesSectorFilter = (normalized === 'TODOS') ? '' : normalized;
+  renderEmployeesPage();
+}
+
+function buildEmployeesSectorOptions(selected) {
+  const sel = String(selected || '').toUpperCase();
+
+  const sectors = Array.from(new Set(
+    (allUsers || [])
+      .map(u => (u?.sector || '').toString().trim().toUpperCase())
+      .filter(Boolean)
+  )).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+  return sectors.map(s => `
+    <option value="${escapeHtml(s)}" ${s === sel ? 'selected' : ''}>
+      ${escapeHtml(s)}
+    </option>
+  `).join('');
+}
+
     function showAddEmployeeModal() {
-      const modal = document.createElement('div');
-      modal.className = 'modal-backdrop fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4';
-      modal.innerHTML = `
-        <div class="bg-white rounded-xl shadow-2xl w-full max-w-md">
-          <div class="border-b-2 px-6 py-4" style="border-color: #c4a8e0;">
-            <h3 class="text-xl font-bold text-gray-800">Adicionar Funcionário</h3>
+  const modal = document.createElement('div');
+  modal.className = 'modal-backdrop fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4';
+  modal.innerHTML = `
+    <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl">
+      <div class="border-b-2 px-6 py-4 bg-gray-50">
+        <h3 class="text-xl font-bold text-gray-800">Adicionar Funcionário</h3>
+      </div>
+
+      <form id="add-employee-form" onsubmit="handleAddEmployee(event)" class="p-6 space-y-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-bold mb-2 text-gray-700">Nome</label>
+            <input id="add_name" name="name" required class="w-full px-4 py-2 border border-gray-300 rounded-lg" />
           </div>
-          <form onsubmit="handleAddEmployee(event)" class="p-6">
-            <div class="mb-4">
-              <label class="block text-sm font-bold mb-2 text-gray-700">Nome Completo</label>
-              <input type="text" name="name" required class="w-full px-4 py-2 border border-gray-300 rounded-lg" oninput="this.value = this.value.toUpperCase()">
-            </div>
-            <div class="mb-4">
-              <label class="block text-sm font-bold mb-2 text-gray-700">CPF</label>
-              <input type="text" name="cpf" required maxlength="14" class="w-full px-4 py-2 border border-gray-300 rounded-lg" oninput="this.value = formatCPF(this.value)">
-            </div>
-            <div class="mb-4">
+
+          <div>
+            <label class="block text-sm font-bold mb-2 text-gray-700">CPF</label>
+            <input id="add_cpf" name="cpf" required class="w-full px-4 py-2 border border-gray-300 rounded-lg" />
+          </div>
+
+          <div>
   <label class="block text-sm font-bold mb-2 text-gray-700">Setor</label>
-  <select
-    name="sector"
-    required
-    class="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white"
-  >
+  <select id="add_sector" name="sector" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required>
     <option value="">Selecione o setor</option>
     <option value="ADM">ADM</option>
     <option value="M. MOVEL">M. MOVEL</option>
@@ -6522,63 +7381,410 @@ function cancelarEncerramento(button) {
   </select>
 </div>
 
-            <div class="mb-6">
-              <label class="block text-sm font-bold mb-2 text-gray-700">Senha Inicial</label>
-              <input type="password" name="password" required minlength="6" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
-            </div>
-            <div class="flex space-x-4">
-              <button type="submit" class="flex-1 py-3 text-white rounded-lg font-bold hover:opacity-90 transition-opacity" style="background-color: #c4a8e0;">
-                Adicionar
-              </button>
-              <button type="button" onclick="this.closest('.modal-backdrop').remove()" class="flex-1 py-3 bg-gray-300 text-gray-700 rounded-lg font-bold hover:bg-gray-400 transition-colors">
-                Cancelar
-              </button>
-            </div>
-          </form>
+<div>
+  <label class="block text-sm font-bold mb-2 text-gray-700">E-mail</label>
+  <input
+    id="add_email"
+    name="email"
+    type="email"
+    placeholder="ex: aline@gmail.com"
+    class="w-full px-4 py-2 border border-gray-300 rounded-lg"
+  />
+</div>
+
+         <div>
+  <label class="block text-sm font-bold mb-2 text-gray-700">Unidade</label>
+  <select id="add_unit" name="unit" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required>
+    <option value="">Selecione a unidade</option>
+    <option value="CALTINS">CALTINS</option>
+    <option value="CALTINS XAMBIOA II">CALTINS XAMBIOA II</option>
+    <option value="FORMACAL">FORMACAL</option>
+    <option value="GESSOTINS">GESSOTINS</option>
+    <option value="MINERAX">MINERAX</option>
+    <option value="NATICAL">NATICAL</option>
+    <option value="SUPERCAL">SUPERCAL</option>
+  </select>
+</div>
+
+          <div>
+            <label class="block text-sm font-bold mb-2 text-gray-700">Função</label>
+            <input id="add_role" name="role" class="w-full px-4 py-2 border border-gray-300 rounded-lg" placeholder="Ex: Operador, Coordenador" />
+          </div>
+
+          <div>
+            <label class="block text-sm font-bold mb-2 text-gray-700">Senha Inicial</label>
+            <input id="add_password" type="password" name="password" required minlength="6" class="w-full px-4 py-2 border border-gray-300 rounded-lg" />
+          </div>
         </div>
-      `;
-      document.body.appendChild(modal);
+
+        <div class="flex space-x-4 pt-2">
+          <button type="submit" class="flex-1 py-3 text-white rounded-lg font-bold hover:opacity-90 transition-opacity" style="background-color: #c4a8e0;">
+            Adicionar
+          </button>
+          <button type="button" onclick="this.closest('.modal-backdrop').remove()" class="flex-1 py-3 bg-gray-300 text-gray-700 rounded-lg font-bold hover:bg-gray-400 transition-colors">
+            Cancelar
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+// helper para evitar XSS ao injetar valores no template
+function escapeHtml(str) {
+  return String(str || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+// ==============================
+// Abre modal de edição (pré-preenchido)
+// ==============================
+async function showEditEmployeeModal(userId) {
+  // tenta pegar no cache allUsers, fallback para Firestore
+  let data = (allUsers || []).find(u => u.id === userId || u.uid === userId);
+  if (!data) {
+    const doc = await db.collection('users').doc(userId).get();
+    if (!doc.exists) {
+      showToast('Funcionário não encontrado', 'error');
+      return;
+    }
+    data = { id: doc.id, ...doc.data() };
+  }
+
+  // prepara valores de data para inputs type=date (yyyy-mm-dd)
+  const vac = data.vacationPeriod || null;
+  const vacStart = vac && vac.start ? (new Date(vac.start).toISOString().slice(0,10)) : '';
+  const vacEnd   = vac && vac.end   ? (new Date(vac.end).toISOString().slice(0,10))   : '';
+
+  // cria modal
+  const modal = document.createElement('div');
+  modal.className = 'modal-backdrop fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4';
+  modal.innerHTML = `
+    <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+      <div class="border-b-2 px-6 py-4 bg-gray-50">
+        <h3 class="text-xl font-bold text-gray-800">Editar Funcionário</h3>
+      </div>
+
+      <form id="edit-employee-form" onsubmit="handleEditEmployee(event, '${data.id}')" class="p-6 space-y-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-bold mb-2 text-gray-700">Nome</label>
+            <input name="name" value="${escapeHtml(data.name || '')}" required class="w-full px-4 py-2 border border-gray-300 rounded-lg" />
+          </div>
+
+          <div>
+            <label class="block text-sm font-bold mb-2 text-gray-700">CPF</label>
+            <input name="cpf" value="${escapeHtml(data.cpf || '')}" required class="w-full px-4 py-2 border border-gray-300 rounded-lg" />
+          </div>
+
+          <div>
+            <label class="block text-sm font-bold mb-2 text-gray-700">Setor</label>
+            <select name="sector" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required>
+              <option value="">Selecione o setor</option>
+              <option value="ADM" ${data.sector === 'ADM' ? 'selected' : ''}>ADM</option>
+              <option value="M. MOVEL" ${data.sector === 'M. MOVEL' ? 'selected' : ''}>M. MOVEL</option>
+              <option value="M. FIXA" ${data.sector === 'M. FIXA' ? 'selected' : ''}>M. FIXA</option>
+              <option value="M. ELÉTRICA" ${data.sector === 'M. ELÉTRICA' ? 'selected' : ''}>M. ELÉTRICA</option>
+              <option value="PRODUÇÃO" ${data.sector === 'PRODUÇÃO' ? 'selected' : ''}>PRODUÇÃO</option>
+              <option value="MINA" ${data.sector === 'MINA' ? 'selected' : ''}>MINA</option>
+            </select>
+          </div>
+
+          <div>
+  <label class="block text-sm font-bold mb-2 text-gray-700">E-mail</label>
+<input
+  name="email"
+  type="email"
+  value="${escapeHtml(data.email || '')}"
+  class="w-full px-4 py-2 border border-gray-300 rounded-lg"
+/>
+</div>
+
+          <div>
+            <label class="block text-sm font-bold mb-2 text-gray-700">Unidade</label>
+            <select name="unit" class="w-full px-4 py-2 border border-gray-300 rounded-lg" required>
+              <option value="">Selecione a unidade</option>
+              <option value="CALTINS" ${data.unit === 'CALTINS' ? 'selected' : ''}>CALTINS</option>
+              <option value="CALTINS XAMBIOA II" ${data.unit === 'CALTINS XAMBIOA II' ? 'selected' : ''}>CALTINS XAMBIOA II</option>
+              <option value="FORMACAL" ${data.unit === 'FORMACAL' ? 'selected' : ''}>FORMACAL</option>
+              <option value="GESSOTINS" ${data.unit === 'GESSOTINS' ? 'selected' : ''}>GESSOTINS</option>
+              <option value="MINERAX" ${data.unit === 'MINERAX' ? 'selected' : ''}>MINERAX</option>
+              <option value="NATICAL" ${data.unit === 'NATICAL' ? 'selected' : ''}>NATICAL</option>
+              <option value="SUPERCAL" ${data.unit === 'SUPERCAL' ? 'selected' : ''}>SUPERCAL</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-sm font-bold mb-2 text-gray-700">Função</label>
+            <input name="role" value="${escapeHtml(data.role || '')}" class="w-full px-4 py-2 border border-gray-300 rounded-lg" />
+          </div>
+
+        </div>
+
+        <div class="pt-2 border-t pt-4">
+          <h4 class="text-sm font-semibold mb-2 text-gray-700">Período de Férias (opcional)</h4>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm mb-1 text-gray-600">Início</label>
+              <input type="date" name="vacationStart" value="${vacStart}" class="w-full px-4 py-2 border border-gray-300 rounded-lg" />
+            </div>
+            <div>
+              <label class="block text-sm mb-1 text-gray-600">Fim</label>
+              <input type="date" name="vacationEnd" value="${vacEnd}" class="w-full px-4 py-2 border border-gray-300 rounded-lg" />
+            </div>
+          </div>
+          <p class="text-xs text-gray-500 mt-2">Declarando ferias você insenta o funcionario da meta mensal de RID's</p>
+        </div>
+        <div class="mt-3">
+  <button
+    type="button"
+    onclick="clearVacationFields(this)"
+    class="w-full py-2 rounded-lg font-bold bg-red-100 text-red-700 hover:bg-red-200 transition-colors"
+  >
+    Revogar férias
+  </button>
+</div>
+
+        <div class="flex space-x-4 pt-4">
+          <button type="submit" class="flex-1 py-3 text-white rounded-lg font-bold" style="background-color:#f6c02b;color:#000;">
+            Salvar
+          </button>
+          <button type="button" onclick="document.querySelectorAll('.modal-backdrop').forEach(m=>m.remove())" class="flex-1 py-3 bg-gray-300 text-gray-700 rounded-lg font-bold">
+            Cancelar
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+window.clearVacationFields = function(btn) {
+  try {
+    const form = btn.closest('form');
+    if (!form) return;
+    const start = form.querySelector('input[name="vacationStart"]');
+    const end   = form.querySelector('input[name="vacationEnd"]');
+    if (start) start.value = '';
+    if (end) end.value = '';
+    showToast('Período de férias removido. Clique em "Salvar" para aplicar.', 'success');
+  } catch (e) {
+    console.warn(e);
+  }
+};
+
+// ==============================
+// Handler: valida e atualiza Firestore
+// ==============================
+async function handleEditEmployee(event, userId) {
+  event.preventDefault();
+  const form = event.target;
+  const btn = form.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  btn.textContent = 'Salvando...';
+
+  try {
+    const name   = (form.name.value || '').toUpperCase().trim();
+const cpf    = (form.cpf.value || '').toUpperCase().trim();
+const sector = (form.sector.value || '').toUpperCase().trim();
+const unit   = (form.unit.value || '').toUpperCase().trim();
+const role   = (form.role.value || '').toUpperCase().trim();
+const email = (form.email?.value || '').trim().toUpperCase();
+
+// Só valida se tiver preenchido
+if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  showToast('E-mail inválido.', 'error');
+  btn.disabled = false;
+  btn.textContent = 'Salvar';
+  return;
+}
+
+    // férias
+    const vacStartVal = form.vacationStart.value;
+    const vacEndVal   = form.vacationEnd.value;
+
+    let vacationPeriod = null;
+    if (vacStartVal && vacEndVal) {
+      const s = new Date(vacStartVal + 'T00:00:00Z');
+      const e = new Date(vacEndVal + 'T23:59:59Z');
+      if (s > e) {
+        showToast('Período de férias inválido: início é depois do fim.', 'error');
+        btn.disabled = false;
+        btn.textContent = 'Salvar';
+        return;
+      }
+      // salva como Timestamp do Firestore — consistente para consultas/ordenacoes
+      vacationPeriod = {
+        start: firebase.firestore.Timestamp.fromDate(s),
+        end: firebase.firestore.Timestamp.fromDate(e)
+      };
+    } else {
+      vacationPeriod = null;
     }
 
-    async function handleAddEmployee(event) {
-      event.preventDefault();
-      const form = event.target;
-      const button = form.querySelector('button[type="submit"]');
-      
-      button.disabled = true;
-      button.textContent = 'Adicionando...';
-
-      try {
-        const name = form.name.value.toUpperCase();
-        const cpf = form.cpf.value;
-        const sector = form.sector.value;
-        const password = form.password.value;
-        const email = cpfToEmail(cpf);
-
-        const userCredential = await secondaryAuth.createUserWithEmailAndPassword(email, password);
-
-        
-        await db.collection('users').doc(userCredential.user.uid).set({
+const updates = {
   name,
   cpf,
   sector,
-  isAdmin: false,
-  isDeveloper: false,
-  userType: 'Funcionário',
-  createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  unit,
+  role,
+  vacationPeriod,
+  updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+};
+
+// Só adiciona email se existir
+if (email) {
+  updates.email = email;
+}
+
+    await db.collection('users').doc(userId).update(updates);
+
+    // atualiza cache/local e UI
+    await loadUsers(); // assume que essa função recarrega allUsers
+    document.querySelectorAll('.modal-backdrop').forEach(m => m.remove());
+    renderEmployeesPage();
+  } catch (error) {
+    console.error(error);
+    showToast('Erro ao salvar: ' + (error?.message || error), 'error');
+    btn.disabled = false;
+    btn.textContent = 'Salvar';
+  }
+}
+
+// helper: formata CPF para "000.000.000-00"
+function formatCpf(raw) {
+  if (raw === undefined || raw === null) return '';
+  const digits = String(raw).replace(/\D/g, '');
+  if (digits.length !== 11) return digits;
+  return digits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
+}
+
+
+// cadastra funcionario
+// helper: formata CPF para "000.000.000-00"
+function formatCpf(raw) {
+  if (raw === undefined || raw === null) return '';
+  const digits = String(raw).replace(/\D/g, '');
+  if (digits.length !== 11) return digits;
+  return digits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
+}
+
+function normalizeCpf(cpf) {
+  return String(cpf || '').replace(/\D/g, '');
+}
+
+function cpfToAuthEmail(cpf) {
+  return normalizeCpf(cpf) + '@jdemito.com';
+}
+
+async function handleAddEmployee(event) {
+  event.preventDefault();
+  const form = event.target;
+  const submitBtn = form.querySelector('button[type="submit"]');
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Adicionando...';
+
+  try {
+    // ===== leitura dos campos =====
+    const name = (form.name.value || '').toUpperCase().trim();
+    const cpfRaw = (form.cpf.value || '').trim();
+    const cpfClean = cpfRaw.replace(/\D/g, '');
+    const cpfFormatted = formatCpf(cpfRaw);
+
+    const sector = form.sector ? form.sector.value : (form.querySelector('#add_sector')?.value || '');
+    const unit = form.unit ? form.unit.value : (form.querySelector('#add_unit')?.value || '');
+    const role = form.role ? form.role.value : (form.querySelector('#add_role')?.value || '');
+    const password = (form.password.value || '').trim();
+
+    // ===== validações =====
+    if (!cpfClean || !name || !password) {
+      showToast('Nome, CPF e senha são obrigatórios', 'error');
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Adicionar';
+      return;
+    }
+
+    if (cpfClean.length !== 11) {
+      showToast('CPF inválido.', 'error');
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Adicionar';
+      return;
+    }
+
+    // ===== email digitado no formulário (agora OPCIONAL) =====
+const email = (form.email?.value || form.querySelector('#add_email')?.value || '')
+  .trim()
+  .toLowerCase();
+
+// só valida se o usuário realmente digitou algo
+if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  showToast('E-mail inválido.', 'error');
+  submitBtn.disabled = false;
+  submitBtn.textContent = 'Adicionar';
+  return;
+}
+
+// ===== cria no AUTH =====
+const authEmail = cpfToAuthEmail(cpfClean);
+const userCredential = await secondaryAuth.createUserWithEmailAndPassword(authEmail, password);
+
+    // ===== objeto FIRESTORE =====
+    const userDoc = {
+      name,
+      cpf: cpfFormatted,
+      email: email || null,        // <<<<<< AGORA SALVA EMAIL
+      sector: sector || null,
+      unit: unit || null,
+      role: role || null,
+      isAdmin: false,
+      isDeveloper: false,
+      userType: 'Funcionário',
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    };
+
+    // ===== grava na coleção users =====
+    await db.collection('users').doc(userCredential.user.uid).set(userDoc);
+
+    showToast('Funcionário criado com sucesso!', 'success');
+
+
+    console.log('ANTES DO RENDER - allUsers:', allUsers);
+console.log('ANTES DO RENDER - total:', allUsers.length);
+
+
+// atualiza a lista local imediatamente
+allUsers.push({
+  id: userCredential.user.uid,
+  ...userDoc
 });
 
-        
-        showToast('Funcionário adicionado com sucesso!');
-        await loadUsers();
-        form.closest('.modal-backdrop').remove();
-        renderEmployeesPage();
-      } catch (error) {
-        showToast('Erro ao adicionar funcionário: ' + error.message, 'error');
-        button.disabled = false;
-        button.textContent = 'Adicionar';
-      }
+form.closest('.modal-backdrop')?.remove();
+renderEmployeesPage();
+
+// recarga oficial em segundo passo para garantir sincronização
+setTimeout(async () => {
+  try {
+    await loadUsers();
+    if (window.currentPage === 'employees') {
+      renderEmployeesPage();
     }
+  } catch (e) {
+    console.warn('Erro ao recarregar usuários após cadastro:', e);
+  }
+}, 150);
+
+  } catch (error) {
+    console.error('Erro ao adicionar funcionário:', error);
+    showToast('Erro ao adicionar funcionário: ' + (error?.message || error), 'error');
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Adicionar';
+  }
+}
 
     function showDeleteEmployeeModal(userId, userName) {
       const modal = document.createElement('div');
@@ -7348,6 +8554,560 @@ const reportDisplayRids = resolvedPreviousInMonth.length > 0
       `;
     }
 
+    function getMaintenanceDateText(m) {
+  const raw =
+    m?.createdAt?.toDate?.() ||
+    m?.emissionDate?.toDate?.() ||
+    (m?.date ? new Date(m.date) : null);
+
+  if (!raw || isNaN(raw.getTime())) return '-';
+
+  return raw.toLocaleDateString('pt-BR') + ' ' + raw.toLocaleTimeString('pt-BR', {
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function renderMaintenancesPage() {
+  window.currentPage = 'maintenances';
+
+  const app = document.getElementById('app');
+  if (!app) return;
+
+  const base = (allMaintenances || []).filter(m => !m.deleted);
+
+  const abertas = base.filter(m => String(m.status || '').toUpperCase() === 'ABERTA');
+  const andamento = base.filter(m => {
+    const status = String(m.status || '').toUpperCase();
+    return status === 'EM_ANDAMENTO' || status === 'EM ANDAMENTO';
+  });
+  const concluidas = base.filter(m => {
+    const status = String(m.status || '').toUpperCase();
+    return status === 'CONCLUIDA' || status === 'CONCLUÍDA';
+  });
+
+  const pendentesLista = [...abertas, ...andamento].sort((a, b) => {
+    const ta =
+      a.createdAt?.toMillis?.() ||
+      a.emissionDate?.toMillis?.() ||
+      0;
+
+    const tb =
+      b.createdAt?.toMillis?.() ||
+      b.emissionDate?.toMillis?.() ||
+      0;
+
+    return tb - ta;
+  });
+
+  const concluidasLista = [...concluidas].sort((a, b) => {
+    const ta =
+      a.concludedAt?.toMillis?.() ||
+      a.updatedAt?.toMillis?.() ||
+      a.createdAt?.toMillis?.() ||
+      0;
+
+    const tb =
+      b.concludedAt?.toMillis?.() ||
+      b.updatedAt?.toMillis?.() ||
+      b.createdAt?.toMillis?.() ||
+      0;
+
+    return tb - ta;
+  });
+
+  app.innerHTML = `
+    <div class="h-full flex flex-col">
+      ${renderHeader(defaultConfig)}
+      ${renderNavigation('maintenances')}
+
+      <div class="flex-1 overflow-auto p-8" style="background-color: #dfdfdf;">
+        <div class="w-full px-6 2xl:px-16 space-y-6">
+
+          <div class="flex items-center justify-between">
+            <div>
+              <h1 class="text-2xl font-bold text-gray-800">Manutenções</h1>
+              <p class="text-sm text-gray-500">Acompanhamento das solicitações de manutenção</p>
+            </div>
+
+            <button
+              onclick="openCreateMaintenanceModal()"
+              class="px-6 py-3 rounded-xl text-white font-bold shadow-md transition-all hover:opacity-90"
+              style="background-color: #6b9eb0;"
+            >
+              Nova manutenção
+            </button>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+
+            <div class="stats-slim-card rounded-xl shadow-md border border-blue-100 transition-all duration-200 hover:shadow-lg hover:brightness-[1.02]" style="background-color: #eef6ff;">
+              <div class="stats-slim-row">
+                <div class="stats-slim-left">
+                  <div class="stats-slim-icon" style="background-color: rgba(59, 130, 246, 0.14); color: #2563eb;">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                    </svg>
+                  </div>
+                  <p class="stats-slim-title">Total</p>
+                </div>
+                <p class="stats-slim-value text-gray-800">${base.length}</p>
+              </div>
+            </div>
+
+            <div class="stats-slim-card rounded-xl shadow-md border border-red-100 transition-all duration-200 hover:shadow-lg hover:brightness-[1.02]" style="background-color: #fff1f2;">
+              <div class="stats-slim-row">
+                <div class="stats-slim-left">
+                  <div class="stats-slim-icon" style="background-color: rgba(239, 68, 68, 0.14); color: #ef4444;">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                  </div>
+                  <p class="stats-slim-title">Abertas</p>
+                </div>
+                <p class="stats-slim-value text-gray-800">${abertas.length}</p>
+              </div>
+            </div>
+
+           <div class="stats-slim-card rounded-xl shadow-md border border-yellow-100 transition-all duration-200 hover:shadow-lg hover:brightness-[1.02]" style="background-color: #fffbea;">
+              <div class="stats-slim-row">
+                <div class="stats-slim-left">
+                  <div class="stats-slim-icon" style="background-color: rgba(250, 204, 21, 0.18); color: #ca8a04;">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                  </div>
+                  <p class="stats-slim-title">Em andamento</p>
+                </div>
+                <p class="stats-slim-value text-gray-800">${andamento.length}</p>
+              </div>
+            </div>
+
+          <div class="stats-slim-card rounded-xl shadow-md border border-green-100 transition-all duration-200 hover:shadow-lg hover:brightness-[1.02]" style="background-color: #effaf3;">
+              <div class="stats-slim-row">
+                <div class="stats-slim-left">
+                  <div class="stats-slim-icon" style="background-color: rgba(34, 197, 94, 0.16); color: #16a34a;">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                    </svg>
+                  </div>
+                  <p class="stats-slim-title">Concluídas</p>
+                </div>
+                <p class="stats-slim-value text-gray-800">${concluidas.length}</p>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="bg-white rounded-xl shadow-lg p-6">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="text-lg font-bold text-gray-800">Minhas manutenções designadas</h3>
+
+              <button
+                onclick="toggleResolvedMaintenances()"
+                class="text-sm font-bold transition-colors"
+                style="color: #6b9eb0;"
+              >
+                ${maintenanceResolvedVisible ? 'Ocultar concluídas' : 'Ver concluídas'}
+              </button>
+            </div>
+
+            <div class="space-y-2">
+              ${pendentesLista.length === 0 ? `
+                <div class="text-sm text-gray-500">Nenhuma manutenção pendente.</div>
+              ` : pendentesLista.map(m => `
+                <div
+                  onclick="openMaintenanceDetailsModal('${m.id}')"
+                  class="bg-white rounded-lg shadow-md p-4 border border-gray-100 cursor-pointer hover:shadow-lg transition-all"
+                >
+                  <div class="grid grid-cols-1 md:grid-cols-5 gap-4 items-center">
+
+                    <div>
+                      <p class="text-xs text-gray-500 font-semibold uppercase">ID</p>
+                      <p class="text-sm font-extrabold text-gray-800">
+                        ${m.maintenanceNumber || '-'}
+                      </p>
+                    </div>
+
+                    <div>
+                      <p class="text-xs text-gray-500 font-semibold uppercase">Emitente</p>
+                      <p class="text-sm font-medium text-gray-800">
+                        ${m.requesterName || m.emitterName || m.createdByName || '-'}
+                      </p>
+                    </div>
+
+                    <div>
+                      <p class="text-xs text-gray-500 font-semibold uppercase">Prioridade</p>
+                      <p class="text-sm font-bold ${
+                        String(m.priority || '').toUpperCase() === 'CRITICA' || String(m.priority || '').toUpperCase() === 'CRÍTICA'
+                          ? 'text-purple-700'
+                          : String(m.priority || '').toUpperCase() === 'ALTA'
+                          ? 'text-red-600'
+                          : String(m.priority || '').toUpperCase() === 'MÉDIA' || String(m.priority || '').toUpperCase() === 'MEDIA'
+                          ? 'text-yellow-600'
+                          : 'text-gray-700'
+                      }">
+                        ${m.priority || 'NORMAL'}
+                      </p>
+                    </div>
+
+                    <div>
+                      <p class="text-xs text-gray-500 font-semibold uppercase">Status</p>
+                      <span class="inline-block text-xs font-bold px-3 py-1 rounded-lg ${
+                        String(m.status || '').toUpperCase() === 'EM_ANDAMENTO' || String(m.status || '').toUpperCase() === 'EM ANDAMENTO'
+                          ? 'bg-yellow-100 text-yellow-700'
+                          : 'bg-red-100 text-red-700'
+                      }">
+                        ${String(m.status || '').toUpperCase() === 'EM_ANDAMENTO' || String(m.status || '').toUpperCase() === 'EM ANDAMENTO'
+                          ? 'EM ANDAMENTO'
+                          : 'ABERTA'}
+                      </span>
+                    </div>
+
+                    <div>
+                      <p class="text-xs text-gray-500 font-semibold uppercase">Data</p>
+                      <p class="text-sm font-medium text-gray-700">
+                        ${getMaintenanceDateText(m)}
+                      </p>
+                    </div>
+
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+
+            <div id="resolvedMaintenancesBlock" class="${maintenanceResolvedVisible ? '' : 'hidden'} mt-6">
+              <h4 class="text-base font-bold text-gray-800 mb-3">Manutenções concluídas</h4>
+
+              <div class="space-y-2">
+                ${concluidasLista.length === 0 ? `
+                  <div class="text-sm text-gray-500">Nenhuma manutenção concluída.</div>
+                ` : concluidasLista.map(m => `
+                  <div
+                    onclick="openMaintenanceDetailsModal('${m.id}')"
+                    class="bg-gray-50 rounded-lg p-4 border border-gray-200 cursor-pointer hover:shadow-md transition-all"
+                  >
+                    <div class="grid grid-cols-1 md:grid-cols-5 gap-4 items-center">
+
+                      <div>
+                        <p class="text-xs text-gray-500 font-semibold uppercase">ID</p>
+                        <p class="text-sm font-extrabold text-gray-800">
+                          ${m.maintenanceNumber || '-'}
+                        </p>
+                      </div>
+
+                      <div>
+                        <p class="text-xs text-gray-500 font-semibold uppercase">Emitente</p>
+                        <p class="text-sm font-medium text-gray-800">
+                          ${m.requesterName || m.emitterName || m.createdByName || '-'}
+                        </p>
+                      </div>
+
+                      <div>
+                        <p class="text-xs text-gray-500 font-semibold uppercase">Prioridade</p>
+                        <p class="text-sm font-bold ${
+                          String(m.priority || '').toUpperCase() === 'CRITICA' || String(m.priority || '').toUpperCase() === 'CRÍTICA'
+                            ? 'text-purple-700'
+                            : String(m.priority || '').toUpperCase() === 'ALTA'
+                            ? 'text-red-600'
+                            : String(m.priority || '').toUpperCase() === 'MÉDIA' || String(m.priority || '').toUpperCase() === 'MEDIA'
+                            ? 'text-yellow-600'
+                            : 'text-gray-700'
+                        }">
+                          ${m.priority || 'NORMAL'}
+                        </p>
+                      </div>
+
+                      <div>
+                        <p class="text-xs text-gray-500 font-semibold uppercase">Status</p>
+                        <span class="inline-block text-xs font-bold px-3 py-1 rounded-lg bg-green-100 text-green-700">
+                          CONCLUÍDA
+                        </span>
+                      </div>
+
+                      <div>
+                        <p class="text-xs text-gray-500 font-semibold uppercase">Data</p>
+                        <p class="text-sm font-medium text-gray-700">
+                          ${getMaintenanceDateText(m)}
+                        </p>
+                      </div>
+
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function openMaintenanceDetailsModal(maintenanceId) {
+  const maintenance = (allMaintenances || []).find(m => m.id === maintenanceId);
+  if (!maintenance) {
+    showToast('Manutenção não encontrada', 'error');
+    return;
+  }
+
+  const createdAtText = maintenance.createdAt?.toDate
+    ? maintenance.createdAt.toDate().toLocaleString('pt-BR')
+    : '-';
+
+  const updatedAtText = maintenance.updatedAt?.toDate
+    ? maintenance.updatedAt.toDate().toLocaleString('pt-BR')
+    : '-';
+
+  const concludedAtText = maintenance.concludedAt?.toDate
+    ? maintenance.concludedAt.toDate().toLocaleString('pt-BR')
+    : '-';
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-backdrop fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4';
+  modal.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between px-6 py-4 border-b">
+        <h3 class="text-xl font-bold text-gray-800">Detalhes da manutenção</h3>
+        <button onclick="this.closest('.modal-backdrop').remove()" class="text-gray-500 hover:text-gray-800 text-2xl leading-none">&times;</button>
+      </div>
+
+      <div class="p-6 space-y-6">
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <p class="text-xs font-bold text-gray-500 uppercase">ID</p>
+            <p class="text-sm font-bold text-gray-800">${maintenance.maintenanceNumber || '-'}</p>
+          </div>
+
+          <div>
+            <p class="text-xs font-bold text-gray-500 uppercase">Status</p>
+            <p class="text-sm font-bold text-gray-800">${maintenance.status || '-'}</p>
+          </div>
+
+          <div>
+            <p class="text-xs font-bold text-gray-500 uppercase">Emitente</p>
+            <p class="text-sm text-gray-800">${maintenance.requesterName || '-'}</p>
+          </div>
+
+          <div>
+            <p class="text-xs font-bold text-gray-500 uppercase">Responsável</p>
+            <p class="text-sm text-gray-800">${maintenance.assignedToName || '-'}</p>
+          </div>
+
+          <div>
+            <p class="text-xs font-bold text-gray-500 uppercase">Prioridade</p>
+            <p class="text-sm text-gray-800">${maintenance.priority || '-'}</p>
+          </div>
+
+          <div>
+            <p class="text-xs font-bold text-gray-500 uppercase">Setor</p>
+            <p class="text-sm text-gray-800">${maintenance.sector || '-'}</p>
+          </div>
+
+          <div>
+            <p class="text-xs font-bold text-gray-500 uppercase">Equipamento</p>
+            <p class="text-sm text-gray-800">${maintenance.equipment || '-'}</p>
+          </div>
+
+          <div>
+            <p class="text-xs font-bold text-gray-500 uppercase">Local</p>
+            <p class="text-sm text-gray-800">${maintenance.location || '-'}</p>
+          </div>
+
+          <div>
+            <p class="text-xs font-bold text-gray-500 uppercase">Data de emissão</p>
+            <p class="text-sm text-gray-800">${createdAtText}</p>
+          </div>
+
+          <div>
+            <p class="text-xs font-bold text-gray-500 uppercase">Última atualização</p>
+            <p class="text-sm text-gray-800">${updatedAtText}</p>
+          </div>
+
+          <div class="md:col-span-2">
+            <p class="text-xs font-bold text-gray-500 uppercase">Descrição</p>
+            <div class="mt-1 text-sm text-gray-800 bg-gray-50 rounded-lg p-3 border border-gray-200 whitespace-pre-wrap">${maintenance.description || '-'}</div>
+          </div>
+
+          <div class="md:col-span-2">
+            <p class="text-xs font-bold text-gray-500 uppercase">Solução aplicada</p>
+            <div class="mt-1 text-sm text-gray-800 bg-gray-50 rounded-lg p-3 border border-gray-200 whitespace-pre-wrap">${maintenance.resolution || '-'}</div>
+          </div>
+
+          <div>
+            <p class="text-xs font-bold text-gray-500 uppercase">Data de conclusão</p>
+            <p class="text-sm text-gray-800">${concludedAtText}</p>
+          </div>
+        </div>
+
+        <form onsubmit="saveMaintenanceUpdate(event, '${maintenance.id}')">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="md:col-span-2">
+              <label class="block text-sm font-bold text-gray-700 mb-2">O que foi feito para resolver</label>
+              <textarea
+                id="maintenanceResolution_${maintenance.id}"
+                class="w-full px-4 py-3 border border-gray-300 rounded-xl"
+                rows="4"
+              >${maintenance.resolution || ''}</textarea>
+            </div>
+
+            <div>
+              <label class="block text-sm font-bold text-gray-700 mb-2">Status</label>
+              <select
+                id="maintenanceStatus_${maintenance.id}"
+                class="w-full px-4 py-3 border border-gray-300 rounded-xl"
+              >
+                <option value="ABERTA" ${String(maintenance.status || '').toUpperCase() === 'ABERTA' ? 'selected' : ''}>ABERTA</option>
+                <option value="EM ANDAMENTO" ${(String(maintenance.status || '').toUpperCase() === 'EM ANDAMENTO' || String(maintenance.status || '').toUpperCase() === 'EM_ANDAMENTO') ? 'selected' : ''}>EM ANDAMENTO</option>
+                <option value="CONCLUÍDA" ${(String(maintenance.status || '').toUpperCase() === 'CONCLUÍDA' || String(maintenance.status || '').toUpperCase() === 'CONCLUIDA') ? 'selected' : ''}>CONCLUÍDA</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="flex justify-end gap-3 mt-6">
+            <button
+              type="button"
+              onclick="this.closest('.modal-backdrop').remove()"
+              class="px-5 py-3 rounded-xl border border-gray-300 text-gray-700 font-bold"
+            >
+              Fechar
+            </button>
+
+            <button
+              type="submit"
+              class="px-5 py-3 rounded-xl text-white font-bold"
+              style="background-color: #6b9eb0;"
+            >
+              Salvar alteração
+            </button>
+          </div>
+        </form>
+
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+}
+
+async function saveMaintenanceUpdate(event, maintenanceId) {
+  event.preventDefault();
+
+  try {
+    const resolution = document.getElementById(`maintenanceResolution_${maintenanceId}`).value.trim();
+    const statusRaw = document.getElementById(`maintenanceStatus_${maintenanceId}`).value;
+
+    const normalizedStatus =
+      statusRaw === 'EM ANDAMENTO' ? 'EM_ANDAMENTO' :
+      statusRaw === 'CONCLUÍDA' ? 'CONCLUIDA' :
+      statusRaw;
+
+    const updates = {
+      resolution,
+      status: normalizedStatus,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    };
+
+    if (normalizedStatus === 'CONCLUIDA') {
+      updates.concludedAt = firebase.firestore.FieldValue.serverTimestamp();
+    } else {
+      updates.concludedAt = null;
+    }
+
+    await db.collection('maintenances').doc(maintenanceId).update(updates);
+
+    showToast('Manutenção atualizada com sucesso!');
+    document.querySelector('.modal-backdrop')?.remove();
+
+    if (window.currentPage === 'maintenances') {
+      renderMaintenancesPage();
+    }
+  } catch (error) {
+    console.error('Erro ao atualizar manutenção:', error);
+    showToast('Erro ao atualizar manutenção', 'error');
+  }
+}
+
+function drawMaintenanceSparkline(values) {
+  const canvas = document.getElementById('year-corr-sparkline');
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const width = canvas.width;
+  const height = canvas.height;
+
+  ctx.clearRect(0, 0, width, height);
+
+  const maxValue = Math.max(...values, 1);
+  const paddingX = 20;
+  const paddingY = 10;
+  const usableWidth = width - (paddingX * 2);
+  const usableHeight = height - (paddingY * 2);
+
+  const months = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+
+  const points = values.map((value, index) => {
+    const x = paddingX + (usableWidth * index / 11);
+    const y = paddingY + usableHeight - ((value / maxValue) * usableHeight);
+    return { x, y, value };
+  });
+
+  // área suave embaixo da linha
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, height - 14);
+
+  points.forEach((p, index) => {
+    if (index === 0) ctx.lineTo(p.x, p.y);
+    else ctx.lineTo(p.x, p.y);
+  });
+
+  ctx.lineTo(points[points.length - 1].x, height - 14);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(37, 99, 235, 0.08)';
+  ctx.fill();
+
+  // linha
+  ctx.beginPath();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#2563eb';
+
+  points.forEach((p, index) => {
+    if (index === 0) ctx.moveTo(p.x, p.y);
+    else ctx.lineTo(p.x, p.y);
+  });
+
+  ctx.stroke();
+
+  // pontos
+  points.forEach(p => {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#2563eb';
+    ctx.stroke();
+  });
+
+  // meses
+  ctx.fillStyle = '#6b7280';
+  ctx.font = '11px Arial';
+  ctx.textAlign = 'center';
+
+  points.forEach((p, index) => {
+    ctx.fillText(months[index], p.x, height - 2);
+  });
+}
+
+function toggleResolvedMaintenances() {
+  maintenanceResolvedVisible = !maintenanceResolvedVisible;
+  renderMaintenancesPage();
+}
+
    function renderReportRows(rids) {
   if (!rids || rids.length === 0) return '';
 
@@ -8102,6 +9862,7 @@ function renderDesignatedPage() {
 
 }
        function renderDevControlCenter() {
+          window.currentPage = 'designated';
   const config = window.elementSdk ? window.elementSdk.config : defaultConfig;
   const app = document.getElementById('app');
   let base = allRids;
@@ -8174,7 +9935,7 @@ const sectorRanking = Object.entries(sectorRisk)
       ${renderNavigation('designated')}
 
   <div class="flex-1 bg-[#dfdfdf] overflow-auto">
-  <div class="max-w-7xl mx-auto px-8 py-8 space-y-8">
+  <div class="w-full px-6 2xl:px-16">
 
     <!-- Título da página -->
     <div class="flex items-center justify-between mb-6">
@@ -8669,7 +10430,7 @@ function renderNovaPage() {
       ${renderNavigation('nova')}
 
       <div class="flex-1 overflow-auto p-8" style="background-color: #dfdfdf;">
-        <div class="max-w-7xl mx-auto px-8 py-8">
+        <div class="w-full px-6 2xl:px-16">
           <div class="flex items-center justify-between mb-6">
             <h1 class="text-2xl font-bold text-gray-800">Histórico de Alterações</h1>
           </div>
@@ -9017,6 +10778,7 @@ function openRestoreRidModal(ridId, ridNumber) {
 }
 
 async function confirmRestoreRid(ridId) {
+  const pageBeforeRestore = window.currentPage;
   const reason = document.getElementById('restoreRidReason')?.value.trim();
 
   if (!reason) {
@@ -9050,14 +10812,23 @@ Restaurado por: ${currentUserData.name}`;
         : restoreNote
     });
 
-   showToast('RID restaurado com sucesso!', 'success');
-document.querySelector('.modal-backdrop')?.remove();
+    showToast('RID restaurado com sucesso!', 'success');
+    document.querySelector('.modal-backdrop')?.remove();
 
-// 🔥 realtime já atualiza automaticamente
-if (window.currentPage === 'dashboard') renderDashboard();
-if (window.currentPage === 'search') renderSearchPage();
-if (window.currentPage === 'designated') renderDesignatedPage();
-if (window.currentPage === 'nova') renderNovaPage();
+    // 🔒 mantém a página em que o usuário estava
+    if (pageBeforeRestore === 'designated') {
+      window.currentPage = 'designated';
+      renderDesignatedPage();
+    } else if (pageBeforeRestore === 'search') {
+      window.currentPage = 'search';
+      renderSearchPage();
+    } else if (pageBeforeRestore === 'nova') {
+      window.currentPage = 'nova';
+      renderNovaPage();
+    } else {
+      window.currentPage = 'dashboard';
+      renderAdminDashboard();
+    }
 
   } catch (err) {
     console.error(err);
@@ -9147,8 +10918,15 @@ function renderDashboardRiskChart(base) {
 }
 
 
-    function toggleDevFilters() {
-  document.getElementById('devFilterPanel')?.classList.toggle('hidden');
+function toggleDevFilters(force) {
+  const panel = document.getElementById('devFilterPanel');
+  if (!panel) return;
+
+  const shouldOpen = typeof force === 'boolean'
+    ? force
+    : panel.classList.contains('hidden');
+
+  panel.classList.toggle('hidden', !shouldOpen);
 }
 
 function clearDevFilters() {
@@ -9360,10 +11138,10 @@ async function loadImageAsBase64(url) {
 
           <div class="flex-1 overflow-auto p-8" style="background-color: #dfdfdf;">
             <div class="max-w-7xl mx-auto">
-              <h1 class="text-3xl font-bold text-gray-800 mb-8">Meus RIDs Designadas</h1>
+              <h1 class="text-3xl font-bold text-gray-800 mb-8">Meus RIDs Designados</h1>
 
               ${myDesignatedRids.length === 0 ? 
-                '<div class="bg-white rounded-xl shadow-lg p-12 text-center"><p class="text-gray-500 text-lg">Você não possui RIDs designadas no momento</p></div>' :
+                '<div class="bg-white rounded-xl shadow-lg p-12 text-center"><p class="text-gray-500 text-lg">Você não possui RIDs designados no momento</p></div>' :
                 `<div class="space-y-4">${renderRidsList(myDesignatedRids)}</div>`
               }
             </div>
@@ -9373,261 +11151,382 @@ async function loadImageAsBase64(url) {
     }
 
     function renderEmployeeDashboard() {
-      const myRids = allRids.filter(r => r.emitterId === currentUser.uid);
-      const myDesignated = allRids.filter(r => r.responsibleLeader === currentUser.uid);
-      const config = window.elementSdk ? window.elementSdk.config : defaultConfig;
+  window.currentPage = 'employee-dashboard';
 
-      const app = document.getElementById('app');
-      const myStats = calcMyPerformanceStats(myRids);
-      const myPerfHTML = renderMyPerformancePanelHTML(myStats);
-      app.innerHTML = `
-        <div class="h-full flex flex-col">
-          <!-- Header Simplificado para Funcionários -->
-          <div class="px-4 md:px-8 py-4 shadow-lg" style="background-color: #808080;">
-            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-              <div>
-                <h1 class="system-title text-lg md:text-2xl font-bold text-white">${config.system_title || defaultConfig.system_title}</h1>
-                <p class="company-name text-xs md:text-sm text-gray-300">${config.company_name || defaultConfig.company_name}</p>
-                <p class="text-sm font-semibold text-white mt-1">${currentUserData.name}</p>
-                <p class="text-xs text-gray-300">${currentUserData.userType || 'Funcionário'}</p>
-              </div>
-              <div class="flex items-center space-x-2">
-              
-                
-                <!-- Logout Button -->
-                <button onclick="handleLogout()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors" title="Sair">
-                  <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
-                  </svg>
-                </button>
-              </div>
-            </div>
-          </div>
+  if (!unsubscribeMaintenances) {
+    listenMaintenancesRealtime();
+  }
+  const baseRids = (window.allRids || allRids || []);
+  const myRids = baseRids
+    .filter(r => r.emitterId === currentUser.uid)
+    .sort((a, b) => {
+      const ta = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
+      const tb = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
+      return tb - ta;
+    });
 
-<div class="bg-white border-b border-gray-200">
-  <div class="px-2 md:px-8">
-    <nav class="flex overflow-x-auto space-x-1 whitespace-nowrap">
+  const myMaintenances = (allMaintenances || [])
+    .filter(m => !m.deleted && m.requesterId === currentUser.uid)
+    .sort((a, b) => {
+      const ta = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
+      const tb = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
+      return tb - ta;
+    });
+
+  const combinedList = [
+    ...myRids.map(r => ({ ...r, type: 'RID' })),
+    ...myMaintenances.map(m => ({ ...m, type: 'MAN' }))
+  ].sort((a, b) => {
+    const ta = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
+    const tb = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
+    return tb - ta;
+  });
+
+  const config = window.elementSdk ? window.elementSdk.config : defaultConfig;
+  const app = document.getElementById('app');
+  const myStats = calcMyPerformanceStats(myRids);
+  const myPerfHTML = renderMyPerformancePanelHTML(myStats);
+
+  app.innerHTML = `
+    <div class="h-full flex flex-col">
+      <div class="px-4 md:px-8 py-4 shadow-lg relative" style="background-color: #808080;">
+  <div class="flex items-start justify-between gap-4">
+    <div>
+      <h1 class="system-title text-lg md:text-2xl font-bold text-white">
+        ${config.system_title || defaultConfig.system_title}
+      </h1>
+      <p class="company-name text-xs md:text-sm text-gray-300">
+        ${config.company_name || defaultConfig.company_name}
+      </p>
+      <p class="text-sm font-semibold text-white mt-1">
+        ${currentUserData.name}
+      </p>
+      <p class="text-xs text-gray-300">
+        ${currentUserData.userType || 'Funcionário'}
+      </p>
+    </div>
+
+    <div class="relative">
       <button
-        onclick="renderEmployeeDashboard()"
-        class="px-3 md:px-6 py-2 font-semibold border-b-4 whitespace-nowrap text-sm md:text-sm"
-        style="border-color: #a8d5e2; color: #6b9eb0;"
-        aria-current="page"
+        onclick="toggleEmployeeMenu()"
+        class="p-2 rounded-lg hover:bg-gray-700 transition-colors"
+        title="Menu"
       >
-        Meus RIDs
+        <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+        </svg>
       </button>
-    </nav>
+
+      <div
+        id="employeeHeaderMenu"
+        class="hidden absolute right-0 mt-2 w-40 bg-white rounded-lg shadow-xl border border-gray-200 z-50 overflow-hidden"
+      >
+        <button
+          onclick="handleLogout()"
+          class="w-full text-left px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-100 transition-colors"
+        >
+          Sair
+        </button>
+      </div>
+    </div>
   </div>
 </div>
 
-
-          <div class="flex-1 overflow-auto p-8" style="background-color: #dfdfdf;">
-            <div class="max-w-7xl mx-auto">
-              ${myPerfHTML}
-              <div class="flex items-center justify-between mb-8">
-                <h1 class="text-3xl font-bold text-gray-800">Meus RIDs</h1>
-                <button onclick="showCreateRidModal()" 
-              class="flex items-center space-x-2 px-6 py-3 text-white rounded-lg font-bold hover:opacity-90 transition-opacity" style="background-color: #b5e7a0;">
-                  <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                    <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd"/>
-                  </svg>
-                  <span>Novo RID</span>
-                </button>
-              </div>
-
-        
-
-              ${myRids.length === 0
-  ? `
-    <div class="bg-white rounded-xl shadow-lg p-12 text-center">
-      <p class="text-gray-500 text-lg">Você ainda não criou nenhum RID</p>
-    </div>
-  `
-  : `
-    <div class="space-y-4">
-      ${myRids.map(rid => `
-        <div class="bg-white rounded-xl shadow-md p-4 hover:shadow-lg transition">
-
-          <!-- Linha 1 -->
-          <div class="flex items-center gap-2">
-  <span class="text-[#6b9eb0] font-bold text-lg">
-    #${rid.ridNumber}
-  </span>
-  <span class="text-gray-700 font-semibold">
-    · ${rid.emitterName}
-  </span>
-</div>
-
-
-          <!-- Linha 2 -->
-<div class="mt-2 text-gray-700 text-sm">
-  ${rid.description}
-</div>
-
-${
-  String(rid.status || '').toUpperCase().replace(/[_\s]+/g,' ').includes('ANDAMENTO') &&
-  (
-    (rid.observations && rid.observations.trim() !== '') ||
-    (rid.observacoes && rid.observacoes.trim() !== '')
-  )
-    ? (function() {
-        // formata deadline que pode ser Firestore.Timestamp, Date ou string
-        const parseMaybeDate = (d) => {
-          try {
-            if (!d && d !== 0) return null;
-            if (d?.toDate) d = d.toDate(); // Firestore Timestamp
-            const dt = new Date(d);
-            if (isNaN(dt)) return null;
-            return dt;
-          } catch (e) { return null; }
-        };
-
-        // adiciona um dia e retorna string pt-BR
-        const addOneDayAndFormat = (dateObj) => {
-          if (!dateObj) return null;
-          const dt = new Date(dateObj.getTime());
-          dt.setDate(dt.getDate() + 1); // soma 1 dia (faz rollover automaticamente)
-          return dt.toLocaleDateString('pt-BR');
-        };
-
-        const obs = rid.observations || rid.observacoes || '';
-        const rawDeadline = rid.deadline || rid.dueDate || rid.prazo || null;
-        const parsed = parseMaybeDate(rawDeadline);
-        const deadlinePlusOne = addOneDayAndFormat(parsed);
-
-        return `
-        <div class="mt-3 p-3 rounded-lg bg-yellow-50 border border-yellow-300">
-          <p class="text-sm font-bold text-yellow-800 mb-1">
-            Observações do responsável
-          </p>
-
-          <p class="text-sm text-yellow-900 whitespace-pre-line">
-            ${obs}
-            ${deadlinePlusOne ? `\n\nPrazo Definido: ${deadlinePlusOne}` : ''}
-          </p>
+      <div class="bg-white border-b border-gray-200">
+        <div class="px-2 md:px-8">
+          <nav class="flex overflow-x-auto space-x-1 whitespace-nowrap">
+            <button
+              onclick="renderEmployeeDashboard()"
+              class="px-3 md:px-5 py-1 font-medium leading-none border-b-4 whitespace-nowrap text-sm md:text-sm"
+              style="border-color: #a8d5e2; color: #6b9eb0;"
+              aria-current="page"
+            >
+              Meus RIDs
+            </button>
+          </nav>
         </div>
-        `;
-      })()
-    : ''
-}
-
-
-     <!-- Ação imediata do emissor -->
-
-${
-  rid.status === 'CORRIGIDO' &&
-  (!rid.correctiveActions || rid.correctiveActions.trim() === '') &&
-  rid.immediateAction &&
-  rid.immediateAction.trim() !== ''
-    ? `
-      <div class="mt-3 p-3 rounded-lg bg-yellow-50 border border-yellow-300">
-        <p class="text-sm font-bold text-yellow-800 mb-1">
-          Ação imediata
-        </p>
-        <p class="text-sm text-yellow-800">
-          ${rid.immediateAction}
-        </p>
       </div>
-    `
-    : ''
-}
 
+      <div class="flex-1 overflow-auto p-8" style="background-color: #dfdfdf;">
+        <div class="max-w-7xl mx-auto">
+          ${myPerfHTML}
 
-<!-- 🔧 Ação corretiva -->
-${
-  rid.status === 'CORRIGIDO'
-    ? `
-      <div class="mt-3 p-3 rounded-lg bg-green-50 border border-green-200">
-        <p class="text-sm font-bold text-green-700 mb-1">
-          Ação corretiva
-        </p>
-        <p class="text-sm text-green-700">
+          <div class="mb-8">
+
+  <h1 class="text-3xl font-bold text-gray-800 mb-4">
+    Meus RIDs e Manutenções
+  </h1>
+
+  <div class="flex gap-3">
+
+  <!-- BOTÃO NOVO RID -->
+  <button onclick="showCreateRidModal()" 
+    class="flex items-center justify-center space-x-2 px-3 py-2 md:px-6 md:py-3 text-white rounded-lg font-bold hover:opacity-90 transition-opacity text-sm md:text-base"
+    style="background-color: #b5e7a0;">
+    
+    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+      <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd"/>
+    </svg>
+
+    <span>Novo RID</span>
+  </button>
+
+  <!-- BOTÃO NOVA MANUTENÇÃO -->
+  <button onclick="openCreateMaintenanceModal()" 
+    class="flex items-center justify-center space-x-2 px-3 py-2 md:px-6 md:py-3 text-white rounded-lg font-bold hover:opacity-90 transition-opacity text-sm md:text-base"
+    style="background-color: #6b9eb0;">
+
+    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+      <path d="M11.3 1.046a1 1 0 00-1.6 0l-2.2 2.75a1 1 0 00.8 1.6h1.4v3.5H6.5a1 1 0 00-.7 1.7l4.5 4.5a1 1 0 001.4 0l4.5-4.5a1 1 0 00-.7-1.7h-3.2v-3.5h1.4a1 1 0 00.8-1.6l-2.2-2.75z"/>
+    </svg>
+
+    <span>Nova Manutenção</span>
+  </button>
+
+</div>
+</div>
+
           ${
-            rid.correctiveActions && rid.correctiveActions.trim() !== ''
-              ? rid.correctiveActions
-              : (
-                  rid.emitterId === currentUser.uid
-                    ? 'Correção realizada pelo próprio emissor no momento da abertura do RID.'
-                    : 'Aguardando detalhamento da ação corretiva.'
-                )
+            combinedList.length === 0
+              ? `<p class="text-gray-500 text-center py-12">
+                   Você ainda não abriu nenhum RID ou solicitação de manutenção.
+                 </p>`
+              : `
+                <div class="space-y-4">
+                  ${combinedList.map(item => {
+                    const isRid = item.type === 'RID';
+
+                    const displayStatus = isRid
+                      ? String(item.status || '').toUpperCase()
+                      : String(item.status || '').toUpperCase();
+
+                    const maintenanceStatusText =
+                      displayStatus === 'CONCLUIDA' || displayStatus === 'CONCLUÍDA'
+                        ? 'CONCLUÍDA'
+                        : (displayStatus === 'EM_ANDAMENTO' || displayStatus === 'EM ANDAMENTO'
+                            ? 'EM ANDAMENTO'
+                            : 'ABERTA');
+
+                    const maintenanceStatusColor =
+                      maintenanceStatusText === 'CONCLUÍDA'
+                        ? 'bg-green-100 text-green-700'
+                        : maintenanceStatusText === 'EM ANDAMENTO'
+                          ? 'bg-yellow-100 text-yellow-700'
+                          : 'bg-red-100 text-red-700';
+
+                    return `
+                      <div class="bg-white rounded-xl shadow-md p-4 hover:shadow-lg transition">
+
+                        <div class="flex items-center gap-2">
+                          <span class="text-[#6b9eb0] font-bold text-lg">
+                            ${
+                              isRid
+                                ? `#${item.ridNumber || '-'}`
+                                : `MAN #${String(item.maintenanceNumber || '').replace('MAN-', '') || '-'}`
+                            }
+                          </span>
+
+                          ${
+                            isRid
+                              ? `
+                                <span class="text-gray-700 font-semibold">
+                                  · ${item.emitterName || '-'}
+                                </span>
+                              `
+                              : ''
+                          }
+                        </div>
+
+                        <div class="mt-2 text-gray-700 text-sm">
+                          ${item.description || ''}
+                        </div>
+
+                        ${
+                          isRid &&
+                          String(item.status || '').toUpperCase().replace(/[_\\s]+/g,' ').includes('ANDAMENTO') &&
+                          (
+                            (item.observations && item.observations.trim() !== '') ||
+                            (item.observacoes && item.observacoes.trim() !== '')
+                          )
+                            ? (() => {
+                                const parseMaybeDate = (d) => {
+                                  try {
+                                    if (!d && d !== 0) return null;
+                                    if (d?.toDate) d = d.toDate();
+                                    const dt = new Date(d);
+                                    if (isNaN(dt)) return null;
+                                    return dt;
+                                  } catch (e) { return null; }
+                                };
+
+                                const addOneDayAndFormat = (dateObj) => {
+                                  if (!dateObj) return null;
+                                  const dt = new Date(dateObj.getTime());
+                                  dt.setDate(dt.getDate() + 1);
+                                  return dt.toLocaleDateString('pt-BR');
+                                };
+
+                                const obs = item.observations || item.observacoes || '';
+                                const rawDeadline = item.deadline || item.dueDate || item.prazo || null;
+                                const parsed = parseMaybeDate(rawDeadline);
+                                const deadlinePlusOne = addOneDayAndFormat(parsed);
+
+                                return `
+                                  <div class="mt-3 p-3 rounded-lg bg-yellow-50 border border-yellow-300">
+                                    <p class="text-sm font-bold text-yellow-800 mb-1">
+                                      Observações do responsável
+                                    </p>
+
+                                    <p class="text-sm text-yellow-900 whitespace-pre-line">
+                                      ${obs}
+                                      ${deadlinePlusOne ? `\n\nPrazo Definido: ${deadlinePlusOne}` : ''}
+                                    </p>
+                                  </div>
+                                `;
+                              })()
+                            : ''
+                        }
+
+                        ${
+                          isRid &&
+                          item.status === 'CORRIGIDO' &&
+                          (!item.correctiveActions || item.correctiveActions.trim() === '') &&
+                          item.immediateAction &&
+                          item.immediateAction.trim() !== ''
+                            ? `
+                              <div class="mt-3 p-3 rounded-lg bg-yellow-50 border border-yellow-300">
+                                <p class="text-sm font-bold text-yellow-800 mb-1">
+                                  Ação imediata
+                                </p>
+                                <p class="text-sm text-yellow-800">
+                                  ${item.immediateAction}
+                                </p>
+                              </div>
+                            `
+                            : ''
+                        }
+
+                        ${
+                          isRid && item.status === 'CORRIGIDO'
+                            ? `
+                              <div class="mt-3 p-3 rounded-lg bg-green-50 border border-green-200">
+                                <p class="text-sm font-bold text-green-700 mb-1">
+                                  Ação corretiva
+                                </p>
+                                <p class="text-sm text-green-700">
+                                  ${
+                                    item.correctiveActions && item.correctiveActions.trim() !== ''
+                                      ? item.correctiveActions
+                                      : 'Correção realizada pelo próprio emissor no momento da abertura do RID.'
+                                  }
+                                </p>
+                              </div>
+                            `
+                            : ''
+                        }
+
+                        ${
+                          isRid && item.status === 'EXCLUIDO'
+                            ? `
+                              <div class="mt-3 p-3 rounded-lg bg-gray-100 border border-gray-300">
+                                <p class="text-sm font-bold text-gray-700 mb-1">
+                                  RID removido do fluxo operacional de segurança
+                                </p>
+
+                                <p class="text-sm text-gray-600 mb-1">
+                                  Motivo da remoção:
+                                </p>
+
+                                <p class="text-sm text-gray-800 whitespace-pre-line">
+                                  ${
+                                    item.deleteReason && String(item.deleteReason).trim() !== ''
+                                      ? item.deleteReason
+                                      : 'Motivo não informado'
+                                  }
+                                </p>
+                              </div>
+                            `
+                            : ''
+                        }
+
+                        ${
+                          !isRid &&
+                          maintenanceStatusText === 'CONCLUÍDA' &&
+                          item.resolution &&
+                          item.resolution.trim() !== ''
+                            ? `
+                              <div class="mt-3 p-3 rounded-lg bg-green-50 border border-green-200">
+                                <p class="text-sm font-bold text-green-700 mb-1">
+                                  Resolução
+                                </p>
+                                <p class="text-sm text-green-700 whitespace-pre-line">
+                                  ${item.resolution}
+                                </p>
+                              </div>
+                            `
+                            : ''
+                        }
+
+                        <div class="mt-3">
+                          <span class="px-3 py-1 rounded-lg text-xs font-bold ${
+                            isRid ? getStatusColor(item.status) : maintenanceStatusColor
+                          }">
+                            ${isRid ? item.status : maintenanceStatusText}
+                          </span>
+                        </div>
+
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+              `
           }
-        </p>
-      </div>
-    `
-    : ''
-}
-
-<!-- 🗑️ RID excluído -->
-${
-  rid.status === 'EXCLUIDO'
-    ? `
-      <div class="mt-3 p-3 rounded-lg bg-gray-100 border border-gray-300">
-        <p class="text-sm font-bold text-gray-700 mb-1">
-          RID removido do fluxo operacional de segurança
-        </p>
-
-        <p class="text-sm text-gray-600 mb-1">
-          Motivo da remoção:
-        </p>
-
-        <p class="text-sm text-gray-800 whitespace-pre-line">
-          ${
-            rid.deleteReason && String(rid.deleteReason).trim() !== ''
-              ? rid.deleteReason
-              : 'Motivo não informado'
-          }
-        </p>
-      </div>
-    `
-    : ''
-}
-
-
-
-
-<!-- Linha 3 -->
-<div class="mt-3">
-  <span class="px-3 py-1 rounded-lg text-xs font-bold ${getStatusColor(rid.status)}">
-    ${rid.status}
-  </span>
-</div>
-
 
         </div>
-      `).join('')}
+      </div>
     </div>
-  `
+  `;
 }
-
-            </div>
-          </div>
-        </div>
-      `;
-    }
-
     window.openCreateRidModal = function () {
   document.getElementById("createRidModal")?.classList.remove("hidden");
 };
 
+function toggleEmployeeMenu() {
+  const menu = document.getElementById('employeeHeaderMenu');
+  if (!menu) return;
+  menu.classList.toggle('hidden');
+}
+
+document.addEventListener('click', function (event) {
+  const menu = document.getElementById('employeeHeaderMenu');
+  if (!menu) return;
+
+  const clickedButton = event.target.closest('[onclick="toggleEmployeeMenu()"]');
+  const clickedInsideMenu = event.target.closest('#employeeHeaderMenu');
+
+  if (!clickedButton && !clickedInsideMenu) {
+    menu.classList.add('hidden');
+  }
+});
 
     function renderHeader(config) {
       return `
-        <div class="px-4 md:px-8 py-4 shadow-lg" style="background-color: #808080;">
-          <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-            <div>
+        <div class="relative px-4 md:px-8 py-2 shadow-lg" style="background-color: #808080;">
+          <div class="flex items-start justify-between">
+            <div class="flex-1">
               <h1 class="system-title text-lg md:text-2xl font-bold text-white">${config.system_title || defaultConfig.system_title}</h1>
               <p class="company-name text-xs md:text-sm text-gray-300">${config.company_name || defaultConfig.company_name}</p>
               <p class="text-sm font-semibold text-white mt-1">${currentUserData.name}</p>
               <p class="text-xs text-gray-300">${currentUserData.userType || (currentUserData.isAdmin ? 'Administrador' : 'Funcionário')}</p>
             </div>
-            <div class="flex items-center space-x-2">
-
-              <div class="relative">
+            <div class="flex items-start">
+              <div class="relative md:static absolute right-3 top-3">
                 <button onclick="toggleHeaderMenu()" class="p-2 rounded-lg hover:bg-gray-700 transition-colors">
                   <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
                   </svg>
                 </button>
-                <div id="headerMenu" class="hidden absolute left-0 md:right-0 md:left-auto mt-2 w-48 bg-white rounded-lg shadow-xl z-50 border border-gray-200">
+                <div id="headerMenu" class="hidden absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-xl z-50 border border-gray-200">
                   <button onclick="handleLogout()" class="w-full text-left px-4 py-3 hover:bg-gray-100 transition-colors rounded-lg flex items-center space-x-2" style="color: #f87171;">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
@@ -9651,7 +11550,7 @@ function renderNavigation(active) {
           <!-- Dashboard -->
           <button
             onclick="renderDashboard()"
-            class="px-3 md:px-6 py-2 font-semibold ${active === 'dashboard' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'dashboard' ? '' : 'text-gray-700'}"
+            class="px-3 md:px-5 py-1 font-medium leading-none ${active === 'dashboard' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'dashboard' ? '' : 'text-gray-700'}"
             ${active === 'dashboard' ? 'style="border-color: #a8d5e2; color: #6b9eb0;" aria-current="page"' : ''}
           >
             Dashboard
@@ -9660,7 +11559,7 @@ function renderNavigation(active) {
           <!-- RIDs -->
           <button
             onclick="renderSearchPage()"
-            class="px-3 md:px-6 py-2 font-semibold ${active === 'rids' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'rids' ? '' : 'text-gray-700'}"
+            class="px-3 md:px-3 md:px-5 py-1 font-medium leading-none ${active === 'rids' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'rids' ? '' : 'text-gray-700'}"
             ${active === 'rids' ? 'style="border-color: #a8d5e2; color: #6b9eb0;" aria-current="page"' : ''}
           >
             RID's
@@ -9670,7 +11569,7 @@ function renderNavigation(active) {
           ${(isAdmin() || isDeveloper()) ? `
             <button
               onclick="renderMyRidsPage()"
-              class="px-3 md:px-6 py-2 font-semibold ${active === 'myrids' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'myrids' ? '' : 'text-gray-700'}"
+              class="px-3 md:px-5 py-1 font-medium leading-none ${active === 'myrids' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'myrids' ? '' : 'text-gray-700'}"
               ${active === 'myrids' ? 'style="border-color: #a8d5e2; color: #6b9eb0;" aria-current="page"' : ''}
             >
               Meus RIDs
@@ -9680,7 +11579,7 @@ function renderNavigation(active) {
           <!-- Funcionários -->
           <button
             onclick="renderEmployeesPage()"
-            class="px-3 md:px-6 py-2 font-semibold ${active === 'employees' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'employees' ? '' : 'text-gray-700'}"
+            class="px-3 md:px-5 py-1 font-medium leading-none ${active === 'employees' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'employees' ? '' : 'text-gray-700'}"
             ${active === 'employees' ? 'style="border-color: #a8d5e2; color: #6b9eb0;" aria-current="page"' : ''}
           >
             Funcionários
@@ -9690,7 +11589,7 @@ function renderNavigation(active) {
           ${isDeveloper() ? `
             <button
               onclick="renderRequestsPage()"
-              class="px-3 md:px-6 py-2 font-semibold ${active === 'requests' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'requests' ? '' : 'text-gray-700'} relative"
+              class="px-3 md:px-5 py-1 font-medium leading-none ${active === 'requests' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'requests' ? '' : 'text-gray-700'} relative"
               ${active === 'requests' ? 'style="border-color: #a8d5e2; color: #6b9eb0;" aria-current="page"' : ''}
             >
               Solicitações
@@ -9701,25 +11600,34 @@ function renderNavigation(active) {
           <!-- Relatórios -->
           <button
             onclick="renderReportsPage()"
-            class="px-3 md:px-6 py-2 font-semibold ${active === 'reports' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'reports' ? '' : 'text-gray-700'}"
+            class="px-3 md:px-5 py-1 font-medium leading-none ${active === 'reports' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'reports' ? '' : 'text-gray-700'}"
             ${active === 'reports' ? 'style="border-color: #a8d5e2; color: #6b9eb0;" aria-current="page"' : ''}
           >
             Relatórios
           </button>
 
-          <!-- Designadas / Centro de Controle -->
+          <!--Manutenções-->
+      <button
+  onclick="listenMaintenancesRealtime(); renderMaintenancesPage();"
+  class="px-3 md:px-5 py-1 font-medium leading-none ${active === 'maintenances' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'maintenances' ? '' : 'text-gray-700'}"
+  ${active === 'maintenances' ? 'style="border-color: #a8d5e2; color: #6b9eb0;" aria-current="page"' : ''}
+>
+  Manutenções
+</button>
+
+          <!-- Designados / Centro de Controle -->
           <button
             data-page="designated"
-            class="px-3 md:px-6 py-2 font-semibold ${active === 'designated' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'designated' ? '' : 'text-gray-700'}"
+            class="px-3 md:px-5 py-1 font-medium leading-none ${active === 'designated' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'designated' ? '' : 'text-gray-700'}"
             ${active === 'designated' ? 'style="border-color: #a8d5e2; color: #6b9eb0;" aria-current="page"' : ''}
           >
-            ${isDeveloper() ? 'Centro de Controle' : 'Designadas'}
+            ${isDeveloper() ? 'Centro de Controle' : 'Designados'}
           </button>
 
           ${isDeveloper() ? `
   <button
     onclick="renderNovaPage()"
-    class="px-3 md:px-6 py-2 font-semibold ${active === 'nova' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'nova' ? '' : 'text-gray-700'}"
+    class="px-3 md:px-5 py-1 font-medium leading-none ${active === 'nova' ? 'border-b-4' : 'hover:bg-gray-100'} transition-colors text-sm md:text-sm ${active === 'nova' ? '' : 'text-gray-700'}"
     ${active === 'nova' ? 'style="border-color: #a8d5e2; color: #6b9eb0;" aria-current="page"' : ''}
   >
     Alterações
@@ -9808,6 +11716,7 @@ document.addEventListener('click', (e) => {
   if (page === 'designated') renderDesignatedPage();
   if (page === 'employees') renderEmployeesPage?.();
   if (page === 'reports') renderReportsPage?.();
+  if (page === 'maintenances') { window.currentPage = 'maintenances'; renderMaintenancesPage?.();}
 });
 
  auth.onAuthStateChanged(async (user) => {
@@ -9816,7 +11725,13 @@ document.addEventListener('click', (e) => {
     currentUser = user;
 
     const userDoc = await db.collection('users').doc(user.uid).get();
-    currentUserData = userDoc.data();
+currentUserData = userDoc.exists ? userDoc.data() : null;
+
+if (!currentUserData) {
+  showToast('Usuário sem cadastro na base (users). Fale com o administrador.', 'error');
+  await auth.signOut();
+  return;
+}
 
     // 🔥 Cancela listener antigo de RIDs (já existente)
     if (window.unsubscribeRids) {
@@ -9837,6 +11752,7 @@ document.addEventListener('click', (e) => {
 
       // listener principal de RIDs (mantém seu padrão)
       window.unsubscribeRids = listenRidsRealtimeAdmin();
+listenMaintenancesRealtime();
 
       // inicia listener de deleteRequests (salva unsubscribe em window.unsubscribeDeleteRequests)
       if (typeof startDeleteRequestsListener === 'function') {
@@ -9866,9 +11782,25 @@ document.addEventListener('click', (e) => {
       renderAdminDashboard();
 
     } else {
-      // usuário comum: garante listener de RIDs do employee
-      window.unsubscribeRids = listenRidsRealtimeEmployee();
-      renderEmployeeDashboard();
+      // usuário comum: mostra tela de carregamento e só renderiza depois do 1º snapshot
+document.getElementById('app').innerHTML = `
+  <div class="h-full flex items-center justify-center" style="background:#dfdfdf;">
+    <div class="bg-white p-6 rounded-xl shadow-lg text-gray-700 font-bold">
+      Carregando seus RIDs...
+    </div>
+  </div>
+`;
+
+window.unsubscribeRids = listenRidsRealtimeEmployee();
+listenMaintenancesRealtime();
+
+// força um re-render assim que chegar o 1º snapshot (sem depender do timing)
+window._employeeFirstSnapshot = true;
+
+// render inicial (se já tiver cache/local rápido, aparece logo)
+setTimeout(() => {
+  try { renderEmployeeDashboard(); } catch (e) {}
+}, 0);
 
       // Como usuário não é admin/dev, não iniciamos listener de deleteRequests.
       // Mas vamos garantir que o card do dashboard (se estiver visível) mostre estado vazio/informativo.
@@ -9920,7 +11852,7 @@ document.addEventListener('click', (e) => {
   </span>
 
   <span class="absolute right-3 text-[10px] text-gray-400">
-    v2.7
+    v4.12.1
   </span>
 </footer>
 </body>
